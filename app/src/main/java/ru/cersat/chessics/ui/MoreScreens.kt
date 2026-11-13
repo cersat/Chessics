@@ -97,7 +97,7 @@ class ShopScreen(a: MainActivity) : Screen(a) {
 		val desc = when (item) {
 			is Shop.Pieces -> item.credit
 			is Shop.Widget -> "Для виджета серии и задачи дня"
-			is Shop.Theme -> "Тёмная тема приложения"
+			is Shop.Theme -> if (item.light) "Светлая тема приложения" else "Тёмная тема приложения"
 			else -> "Цвета клеток и подсветки"
 		}
 		r.addView(ui.col(0, 2, ui.text(item.name, 16f, bold = true), ui.sub(desc, 12f)), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -220,6 +220,7 @@ class SettingsScreen(a: MainActivity) : Screen(a) {
 		box.addView(toggle("Подсветка возможных ходов", "legal", true))
 		box.addView(toggle("Полоса преимущества в партии", "evalbar", true))
 		box.addView(toggle("Анимация ходов", "anim", true))
+		box.addView(toggle("Значок типа своего хода во время партии (★, ?!, ??…)", "liveJudge", true))
 		box.addView(toggle("Сразу превращать пешку в ферзя", "autoqueen", false))
 		box.addView(toggle("Вибрация при ходе", "vibro", true))
 		box.addView(toggle("Напоминание о серии в 20:00", "remind", true) {
@@ -232,7 +233,7 @@ class SettingsScreen(a: MainActivity) : Screen(a) {
 		about.addView(ui.text("О приложении", 16f, bold = true))
 		about.addView(ui.sub("Chessics. Движок Stockfish 17.1 (GPLv3, stockfishchess.org) работает прямо на телефоне. " +
 			"Боты «Материал» и «Алгоритм» перенесены из chess-bots.js. Фигуры — из lichess: " +
-			Shop.PIECES.joinToString("; ") { it.credit } + ". Задачи сгенерированы из партий и проверены Stockfish.", 12f))
+			Shop.PIECES.joinToString("; ") { it.credit } + ". Задачи — из открытой базы lichess (CC0), генератор в приложении проверяет свои задачи Stockfish. Ходы оценивает Stockfish: !! бриллиантовый (жертва, после которой позиция не хуже), ! отличный (единственный сильный), ★ лучший, 👍 очень хороший, ✓ хороший, □ единственный, ?! неточность, ? ошибка, ?? зевок.", 12f))
 		about.addView(ui.space(6))
 		about.addView(ui.sub("Виджеты: долгое нажатие на рабочем столе → Виджеты → Chessics («Серия» и «Задача дня»).", 12f))
 		box.addView(about)

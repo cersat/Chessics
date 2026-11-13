@@ -64,7 +64,7 @@ class Ui(val ctx: Context) {
 	}
 
 	fun clickable(v: View, color: Int, radius: Float = 16f, onClick: () -> Unit): View {
-		v.background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), round(color, radius), null)
+		v.background = RippleDrawable(ColorStateList.valueOf(if (t.light) 0x22000000 else 0x33FFFFFF), round(color, radius), null)
 		v.isClickable = true
 		v.setOnClickListener { onClick() }
 		return v

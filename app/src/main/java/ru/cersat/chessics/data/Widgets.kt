@@ -198,7 +198,7 @@ class PuzzleWidget : AppWidgetProvider() {
 			p.color = skin.text; p.isFakeBoldText = true; p.textSize = header * 0.55f
 			p.setShadowLayer(3f, 0f, 1f, 0x66000000)
 			val solved = Store.get(ctx).dailySolvedToday
-			val title = if (pz == null) "Задача дня" else if (solved) "Задача дня ✓ решена" else "Задача дня · мат в ${pz.mate}"
+			val title = if (pz == null) "Задача дня" else if (solved) "Задача дня ✓ решена" else "Задача дня · ${pz.goal.lowercase()}"
 			c.drawText(title, pad, pad + header * 0.62f, p)
 			if (pz != null) {
 				val pos = Position(); pos.setFen(pz.fen)

@@ -10,7 +10,7 @@ object Shop {
 	open class Item(val id: String, val cat: Cat, val name: String, val price: Int)
 
 	// Тема оформления (всё тёмное)
-	class Theme(id: String, name: String, price: Int, val bg: Int, val card: Int, val card2: Int, val accent: Int, val text: Int, val sub: Int) :
+	class Theme(id: String, name: String, price: Int, val bg: Int, val card: Int, val card2: Int, val accent: Int, val text: Int, val sub: Int, val light: Boolean = false) :
 		Item(id, Cat.THEME, name, price)
 
 	class Board(id: String, name: String, price: Int, val light: Int, val dark: Int, val last: Int, val select: Int) :
@@ -30,7 +30,11 @@ object Shop {
 		Theme("th_sunset", "Закат", 80, c(0xFF1A1012), c(0xFF26171B), c(0xFF341F25), c(0xFFFF7A59), c(0xFFFFEDE8), c(0xFFC09A93)),
 		Theme("th_amethyst", "Аметист", 80, c(0xFF130F1C), c(0xFF1D172B), c(0xFF29203D), c(0xFFB77CFF), c(0xFFF3EDFF), c(0xFFA698C2)),
 		Theme("th_oled", "Полночь (OLED)", 100, c(0xFF000000), c(0xFF0E0E10), c(0xFF19191C), c(0xFFFFFFFF), c(0xFFFFFFFF), c(0xFF8A8A92)),
-		Theme("th_ruby", "Рубин", 120, c(0xFF170A0D), c(0xFF241015), c(0xFF33171E), c(0xFFFF3D6E), c(0xFFFFE9EE), c(0xFFC48E9A))
+		Theme("th_ruby", "Рубин", 120, c(0xFF170A0D), c(0xFF241015), c(0xFF33171E), c(0xFFFF3D6E), c(0xFFFFE9EE), c(0xFFC48E9A)),
+		Theme("th_day", "День (светлая)", 60, c(0xFFF3F4F7), c(0xFFFFFFFF), c(0xFFE6E8EE), c(0xFFE08A12), c(0xFF17191F), c(0xFF6B7280), true),
+		Theme("th_paper", "Бумага (светлая)", 80, c(0xFFF6F0E4), c(0xFFFFFBF3), c(0xFFEDE4D2), c(0xFF8B5E34), c(0xFF2B2118), c(0xFF7D6F5E), true),
+		Theme("th_mint", "Мята (светлая)", 80, c(0xFFEEF7F3), c(0xFFFFFFFF), c(0xFFDCEFE6), c(0xFF0E9F6E), c(0xFF10231B), c(0xFF5C7A6D), true),
+		Theme("th_sky", "Небо (светлая)", 100, c(0xFFEEF4FC), c(0xFFFFFFFF), c(0xFFDDE8F7), c(0xFF2F6FDB), c(0xFF111C2E), c(0xFF5D6F8A), true)
 	)
 
 	val BOARDS = listOf(
@@ -47,7 +51,29 @@ object Shop {
 	val PIECES = listOf(
 		Pieces("pc_cburnett", "Классика", 0, "cburnett", "cburnett — Colin M.L. Burnett, GPLv2+"),
 		Pieces("pc_merida", "Мерида", 100, "merida", "merida — Armando Hernandez Marroquin, GPLv2+"),
-		Pieces("pc_maestro", "Маэстро", 150, "maestro", "maestro — sadsnake1, CC BY-SA 4.0")
+		Pieces("pc_alpha", "Альфа", 80, "alpha", "alpha — Eric Bentzen, свободно для некоммерческого использования"),
+		Pieces("pc_chessnut", "Чесснат", 80, "chessnut", "chessnut — Alexis Luengas, Apache 2.0"),
+		Pieces("pc_companion", "Компаньон", 80, "companion", "companion — David L. Brown, freeware"),
+		Pieces("pc_leipzig", "Лейпциг", 90, "leipzig", "leipzig — Armando Hernandez Marroquin, freeware"),
+		Pieces("pc_maestro", "Маэстро", 150, "maestro", "maestro — sadsnake1, CC BY-NC-SA 4.0"),
+		Pieces("pc_california", "Калифорния", 120, "california", "california — Jerry S., CC BY-NC-SA 4.0"),
+		Pieces("pc_cardinal", "Кардинал", 120, "cardinal", "cardinal — sadsnake1, CC BY-NC-SA 4.0"),
+		Pieces("pc_fresca", "Фреска", 120, "fresca", "fresca — sadsnake1, CC BY-NC-SA 4.0"),
+		Pieces("pc_gioco", "Джоко", 120, "gioco", "gioco — sadsnake1, CC BY-NC-SA 4.0"),
+		Pieces("pc_icpieces", "Айси", 120, "icpieces", "icpieces — sadsnake1, CC BY-NC-SA 4.0"),
+		Pieces("pc_staunty", "Стаунти", 140, "staunty", "staunty — sadsnake1, CC BY-NC-SA 4.0"),
+		Pieces("pc_tatiana", "Татьяна", 140, "tatiana", "tatiana — sadsnake1, CC BY-NC-SA 4.0"),
+		Pieces("pc_dubrovny", "Дубровны", 140, "dubrovny", "dubrovny — sadsnake1, CC BY-NC-SA 4.0"),
+		Pieces("pc_fantasy", "Фэнтези", 160, "fantasy", "fantasy — Maurizio Monge, MIT"),
+		Pieces("pc_spatial", "Пространство", 160, "spatial", "spatial — Maurizio Monge, MIT"),
+		Pieces("pc_celtic", "Кельты", 160, "celtic", "celtic — Maurizio Monge, MIT"),
+		Pieces("pc_papercut", "Вырезка", 160, "papercut", "papercut — Nikolay Anzarov, CC BY 4.0"),
+		Pieces("pc_pixel", "Пиксели", 180, "pixel", "pixel — therealqtpi, AGPLv3+"),
+		Pieces("pc_shapes", "Фигурки-формы", 100, "shapes", "shapes — flugsio, CC BY-SA 4.0"),
+		Pieces("pc_letter", "Буквы", 60, "letter", "letter — usolando, AGPLv3+"),
+		Pieces("pc_kiwen", "Кивен-суви", 120, "kiwen_suwi", "kiwen-suwi — neverRare, CC BY 4.0"),
+		Pieces("pc_horsey", "Лошадки", 200, "horsey", "horsey — cham, michael1241, CC BY-NC-SA 4.0"),
+		Pieces("pc_anarcandy", "Анаркенди", 250, "anarcandy", "anarcandy — caderek, CC BY-NC-SA 4.0")
 	)
 
 	// style: 0 — пламя, 1 — снежинка, 2 — молния, 3 — корона, 4 — минимал, 5 — радуга

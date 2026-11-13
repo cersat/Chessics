@@ -11,6 +11,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
+import ru.cersat.chessics.bots.MoveClass
 import ru.cersat.chessics.chess.M
 import ru.cersat.chessics.chess.P
 import ru.cersat.chessics.chess.Position
@@ -71,6 +72,17 @@ class BoardView(ctx: Context) : View(ctx) {
 	var onMove: (Int) -> Unit = {}
 	var markSquare = -1 // красная/зелёная подсветка (задачи)
 	var markColor = 0
+	// значок типа хода (!!, !, ★, ?! …) в углу клетки
+	var badgeSq = -1
+	var badgeClass: MoveClass? = null
+
+	// праздничная анимация для бриллианта и отличного хода
+	private var fxT = -1f
+	private var fxSq = -1
+	private var fxClass: MoveClass? = null
+	private var fxAnim: ValueAnimator? = null
+	private val particles = ArrayList<FloatArray>() // угол, скорость, размер, 0, вращение
+	private val particleColors = ArrayList<Int>()
 
 	private var board: Shop.Board = Shop.board(ctx)
 	private var set: String = Shop.pieces(ctx).set
@@ -109,6 +121,9 @@ class BoardView(ctx: Context) : View(ctx) {
 		dragFrom = -1
 		dragging = false
 		hintMove = 0
+		badgeSq = -1
+		badgeClass = null
+		fxAnim?.cancel(); fxT = -1f
 		animator?.cancel()
 		if (animate && move != 0) {
 			animFrom = M.from(move); animTo = M.to(move)
@@ -157,6 +172,7 @@ class BoardView(ctx: Context) : View(ctx) {
 			}
 			if (sq == selected) { paint.color = board.select; c.drawRect(x, y, x + s, y + s, paint) }
 			if (sq == markSquare) { paint.color = markColor; c.drawRect(x, y, x + s, y + s, paint) }
+			if (sq == badgeSq && badgeClass != null) { paint.color = (badgeClass!!.color and 0x00FFFFFF) or 0x66000000; c.drawRect(x, y, x + s, y + s, paint) }
 		}
 		// шах
 		if (pos.inCheck()) {
@@ -208,10 +224,121 @@ class BoardView(ctx: Context) : View(ctx) {
 		}
 		// стрелки
 		if (hintMove != 0) drawArrow(c, M.from(hintMove), M.to(hintMove), 0xCC2E9BFF.toInt())
+		if (fxT >= 0f) drawFx(c)
+		val bc = badgeClass
+		if (badgeSq >= 0 && bc != null) {
+			val pop = if (fxT in 0f..1f && fxSq == badgeSq) badgeScale(fxT) else 1f
+			drawBadge(c, badgeSq, bc, pop)
+		}
 		// перетаскиваемая
 		if (dragging && dragFrom >= 0) {
 			val pc = pos.sq[dragFrom]
 			drawPiece(c, pc, dragX - s * 0.6f, dragY - s * 0.9f, s * 1.2f)
+		}
+	}
+
+	private fun badgeScale(t: Float): Float = when {
+		t < 0.18f -> t / 0.18f * 1.5f
+		t < 0.35f -> 1.5f - (t - 0.18f) / 0.17f * 0.6f
+		t < 0.5f -> 0.9f + (t - 0.35f) / 0.15f * 0.1f
+		else -> 1f
+	}
+
+	private fun drawBadge(c: Canvas, sq: Int, cls: MoveClass, scale: Float) {
+		if (scale <= 0f) return
+		val s = cell
+		val r = s * 0.24f * scale
+		val cx = colOf(sq) * s + s - s * 0.12f
+		val cy = rowOf(sq) * s + s * 0.12f
+		paint.color = 0x55000000
+		c.drawCircle(cx + s * 0.02f, cy + s * 0.03f, r, paint)
+		paint.color = cls.color
+		c.drawCircle(cx, cy, r, paint)
+		paint.style = Paint.Style.STROKE; paint.strokeWidth = s * 0.035f * scale; paint.color = 0xFFFFFFFF.toInt()
+		c.drawCircle(cx, cy, r, paint)
+		paint.style = Paint.Style.FILL
+		text.clearShadowLayer()
+		text.color = 0xFFFFFFFF.toInt()
+		text.textSize = r * (if (cls.symbol.length > 1) 0.95f else 1.15f)
+		val tw = text.measureText(cls.symbol)
+		c.drawText(cls.symbol, cx - tw / 2, cy + text.textSize * 0.36f, text)
+	}
+
+	// Бриллиант: вспышка клетки, расходящиеся кольца, искры-звёздочки и «выпрыгивающий» значок
+	fun celebrate(sq: Int, cls: MoveClass) {
+		badgeSq = sq; badgeClass = cls
+		fxSq = sq; fxClass = cls
+		particles.clear(); particleColors.clear()
+		val n = if (cls == MoveClass.BRILLIANT) 34 else 14
+		val rnd = java.util.Random()
+		val palette = if (cls == MoveClass.BRILLIANT) intArrayOf(0xFF1BC6C9.toInt(), 0xFF7FF5F2.toInt(), 0xFFFFFFFF.toInt(), 0xFFFFE27A.toInt(), 0xFF39A0FF.toInt())
+		else intArrayOf(0xFF4D8BF5.toInt(), 0xFFAACBFF.toInt(), 0xFFFFFFFF.toInt())
+		for (i in 0 until n) particles.add(floatArrayOf(
+			(rnd.nextFloat() * Math.PI * 2).toFloat(), 1.2f + rnd.nextFloat() * 2.4f, 0.06f + rnd.nextFloat() * 0.09f,
+			0f, rnd.nextFloat() * 360f)).also { particleColors.add(palette[rnd.nextInt(palette.size)]) }
+		fxAnim?.cancel()
+		fxAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+			duration = if (cls == MoveClass.BRILLIANT) 1900 else 1100
+			interpolator = android.view.animation.LinearInterpolator()
+			addUpdateListener { fxT = it.animatedValue as Float; invalidate() }
+			addListener(object : android.animation.AnimatorListenerAdapter() {
+				override fun onAnimationEnd(a: android.animation.Animator) { fxT = -1f; invalidate() }
+			})
+			start()
+		}
+	}
+
+	private fun drawFx(c: Canvas) {
+		val cls = fxClass ?: return
+		val s = cell
+		val t = fxT
+		val cx = colOf(fxSq) * s + s / 2; val cy = rowOf(fxSq) * s + s / 2
+		val base = cls.color and 0x00FFFFFF
+		// пульсирующая вспышка клетки
+		val glow = ((1 - t) * (0.6f + 0.4f * sin(t * 18f))).coerceIn(0f, 1f)
+		paint.color = base or ((glow * 200).toInt() shl 24)
+		c.drawRect(colOf(fxSq) * s, rowOf(fxSq) * s, colOf(fxSq) * s + s, rowOf(fxSq) * s + s, paint)
+		// лучи
+		if (cls == MoveClass.BRILLIANT && t < 0.7f) {
+			val a = (1 - t / 0.7f)
+			paint.color = 0xFFFFFF or ((a * 120).toInt() shl 24)
+			c.save(); c.rotate(t * 120f, cx, cy)
+			for (i in 0 until 8) {
+				c.rotate(45f, cx, cy)
+				val path = Path()
+				path.moveTo(cx, cy); path.lineTo(cx + s * 0.08f, cy - s * 2.2f * (0.4f + t)); path.lineTo(cx - s * 0.08f, cy - s * 2.2f * (0.4f + t)); path.close()
+				c.drawPath(path, paint)
+			}
+			c.restore()
+		}
+		// кольца
+		paint.style = Paint.Style.STROKE
+		for (k in 0 until (if (cls == MoveClass.BRILLIANT) 3 else 1)) {
+			val tt = t - k * 0.12f
+			if (tt !in 0f..1f) continue
+			paint.strokeWidth = s * 0.08f * (1 - tt)
+			paint.color = base or (((1 - tt) * 230).toInt() shl 24)
+			c.drawCircle(cx, cy, s * (0.45f + tt * 2.6f), paint)
+		}
+		paint.style = Paint.Style.FILL
+		// искры
+		val star = Path()
+		for ((pi, pt) in particles.withIndex()) {
+			val ang = pt[0]; val sp = pt[1]
+			val d = s * sp * (1 - (1 - t) * (1 - t))
+			val x = cx + cos(ang) * d
+			val y = cy + sin(ang) * d + s * 0.9f * t * t
+			val r = s * pt[2] * (1 - t * 0.7f)
+			paint.color = (particleColors[pi] and 0x00FFFFFF) or (((1 - t) * 255).toInt().coerceIn(0, 255) shl 24)
+			star.reset()
+			for (i in 0 until 8) {
+				val a = Math.toRadians((pt[4] + t * 400 + i * 45).toDouble())
+				val rr = if (i % 2 == 0) r * 2.2f else r * 0.6f
+				val px = x + cos(a).toFloat() * rr; val py = y + sin(a).toFloat() * rr
+				if (i == 0) star.moveTo(px, py) else star.lineTo(px, py)
+			}
+			star.close()
+			c.drawPath(star, paint)
 		}
 	}
 

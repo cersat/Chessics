@@ -37,8 +37,25 @@ class MainActivity : Activity() {
 	override fun onCreate(saved: Bundle?) {
 		super.onCreate(saved)
 		ui = Ui(this)
-		window.statusBarColor = ui.t.bg
-		window.navigationBarColor = ui.t.bg
+		if (Build.VERSION.SDK_INT >= 30) {
+			val light = if (ui.t.light) (android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS) else 0
+			window.decorView.post {
+				window.insetsController?.setSystemBarsAppearance(light,
+					android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS)
+			}
+		} else if (ui.t.light) {
+			@Suppress("DEPRECATION")
+			window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+			@Suppress("DEPRECATION")
+			window.statusBarColor = ui.t.bg
+			@Suppress("DEPRECATION")
+			window.navigationBarColor = ui.t.bg
+		} else {
+			@Suppress("DEPRECATION")
+			window.statusBarColor = ui.t.bg
+			@Suppress("DEPRECATION")
+			window.navigationBarColor = ui.t.bg
+		}
 		val root = LinearLayout(this).apply {
 			orientation = LinearLayout.VERTICAL
 			setBackgroundColor(ui.t.bg)

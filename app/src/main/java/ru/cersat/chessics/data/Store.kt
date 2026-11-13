@@ -152,7 +152,28 @@ class Store private constructor(private val ctx: Context) {
 		return r
 	}
 
-	fun puzzleSolved(id: String, mate: Int, clean: Boolean, daily: Boolean): Reward {
+	// Партия на lichess. score: 1 победа, 0.5 ничья, 0 поражение
+	fun onlineFinished(score: Double, plies: Int): Reward {
+		val r = Reward()
+		inc("online")
+		val g = when { score >= 1.0 -> { inc("onlineWins"); 6 }; score > 0 -> 3; plies >= 20 -> 1; else -> 0 }
+		if (g > 0) { r.diamonds += g; r.lines.add("Онлайн-партия: +$g 💎") }
+		if (plies >= 6) markActive(r)
+		checkAchievements(r)
+		addDiamonds(r.diamonds)
+		return r
+	}
+
+	// Тактика и бриллианты человека (в партиях с ботом). Возвращает награды за открытые достижения.
+	fun countMotif(key: String): Reward {
+		val r = Reward()
+		inc(key)
+		checkAchievements(r)
+		if (r.diamonds > 0) addDiamonds(r.diamonds) else changed()
+		return r
+	}
+
+	fun puzzleSolved(id: String, reward: Int, clean: Boolean, daily: Boolean): Reward {
 		val r = Reward()
 		val solved = sp.getStringSet("solved", emptySet())!!.toMutableSet()
 		val first = solved.add(id)
@@ -160,7 +181,8 @@ class Store private constructor(private val ctx: Context) {
 		if (first) {
 			inc("puzzles")
 			if (clean) inc("puzzlesClean")
-			val g = if (clean) mate + 1 else 1
+			if (id.startsWith("gen_")) inc("genSolved")
+			val g = if (clean) reward else 1
 			r.diamonds += g
 			r.lines.add("Задача решена: +$g 💎")
 			if (daily) {
@@ -281,6 +303,20 @@ object Achievements {
 		Ach("puz10", "Решатель", "Решить 10 задач", 10, 10) { it.stat("puzzles") },
 		Ach("puz50", "Тактик", "Решить 50 задач", 30, 50) { it.stat("puzzles") },
 		Ach("puz150", "Гроза матов", "Решить 150 задач", 80, 150) { it.stat("puzzles") },
+		Ach("brill1", "Бриллиант", "Сыграть бриллиантовый ход (!!) против бота", 30, 1) { it.stat("brilliant") },
+		Ach("brill5", "Ювелир", "5 бриллиантовых ходов", 80, 5) { it.stat("brilliant") },
+		Ach("brill20", "Алмазный фонд", "20 бриллиантовых ходов", 250, 20) { it.stat("brilliant") },
+		Ach("great10", "Единственный ход", "10 отличных ходов (!) — когда остальные проигрывают", 30, 10) { it.stat("great") },
+		Ach("fork1", "Вилка", "Взять фигуру после своей вилки (fork)", 15, 1) { it.stat("fork") },
+		Ach("fork10", "Вилочник", "10 реализованных вилок", 50, 10) { it.stat("fork") },
+		Ach("skewer1", "Шампур", "Взять фигуру после своего шампура (skewer)", 20, 1) { it.stat("skewer") },
+		Ach("skewer5", "Мастер шампура", "5 реализованных шампуров", 60, 5) { it.stat("skewer") },
+		Ach("qtrap1", "Ловушка для ферзя", "Поймать ферзя соперника (queen trap) и забрать его", 40, 1) { it.stat("queenTrap") },
+		Ach("qtrap3", "Охотник на ферзей", "Поймать ферзя 3 раза", 100, 3) { it.stat("queenTrap") },
+		Ach("online1", "Выход в свет", "Сыграть партию на lichess", 10, 1) { it.stat("online") },
+		Ach("onlineWin1", "Победа в сети", "Выиграть партию на lichess", 25, 1) { it.stat("onlineWins") },
+		Ach("onlineWin10", "Гроза lichess", "10 побед на lichess", 80, 10) { it.stat("onlineWins") },
+		Ach("gen5", "Генератор", "Решить 5 сгенерированных задач", 20, 5) { it.stat("genSolved") },
 		Ach("hvh5", "Живая доска", "Сыграть 5 партий на одном телефоне", 15, 5) { it.stat("hvh") },
 		Ach("shop5", "Коллекционер", "Купить 5 вещей в магазине", 30, 5) { it.stat("bought") }
 	)

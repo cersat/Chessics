@@ -91,6 +91,9 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		box.addView(modeCard("👥", "Вдвоём на одном телефоне", "Телефон — это доска: лицом к лицу или передавая телефон, с шахматными часами") {
 			a.push(SetupScreen(a, SetupScreen.Mode.HVH))
 		})
+		box.addView(modeCard("🌐", "Онлайн · Lichess", "Живые соперники, вызов друга, Stockfish на сервере lichess. Нужен свой аккаунт") {
+			a.push(LichessScreen(a))
+		})
 		box.addView(modeCard("⚙", "Своя партия", "Любой игрок за каждую сторону: бот против бота, человек за обе стороны…") {
 			a.push(SetupScreen(a, SetupScreen.Mode.CUSTOM))
 		})
@@ -167,7 +170,7 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		val solved = st.dailySolvedToday
 		r.addView(ui.col(0, 4,
 			ui.text("🗓 Задача дня", 17f, bold = true),
-			ui.sub("Мат в ${pz.mate} · ход ${if (pos.side == P.WHITE) "белых" else "чёрных"}"),
+			ui.sub("${pz.goal} · ход ${if (pos.side == P.WHITE) "белых" else "чёрных"}"),
 			ui.text(if (solved) "✓ Решена сегодня" else "+5 💎 бонус за решение", 13f, if (solved) ui.t.accent else ui.t.text)
 		), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		ui.clickable(r, ui.t.card, 18f) { a.push(PuzzleScreen(a, pz, true)) }
@@ -250,11 +253,11 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 			}
 			Player.Kind.MATERIAL -> {
 				box.addView(ui.chips((1..8).map { "Глубина $it" to (it == cur.level) }, 4) { onChange(Player(Player.Kind.MATERIAL, it + 1)) })
-				box.addView(ui.sub("Минимакс с альфа-бетой, считает только материал. Думает до 2,5 с. ≈${cur.elo} Эло (оценка на глаз)."))
+				box.addView(ui.sub("Минимакс с альфа-бетой, считает только материал, но досчитывает все размены до конца и продлевает шахи. Думает до 2,5 с. ≈${cur.elo} Эло (оценка на глаз)."))
 			}
 			Player.Kind.ALGO -> {
 				box.addView(ui.chips((1..5).map { AlgoBot.LABELS[it - 1] to (it == cur.level) }, 3) { onChange(Player(Player.Kind.ALGO, it + 1)) })
-				box.addView(ui.sub("Не перебор, а правила: не вешать фигуры (SEE), вилки, удары по незащищённым. ≈${cur.elo} Эло (оценка на глаз)."))
+				box.addView(ui.sub("Не перебор, а правила: видит мат в 1, не вешает фигуры (SEE), ищет вилки; с «Сильного» смотрит ответ соперника и не пропускает мат в 1; в эндшпиле двигает проходные. ≈${cur.elo} Эло (оценка на глаз)."))
 			}
 			Player.Kind.RANDOM -> box.addView(ui.sub("Ходит случайно. Для разминки и проверки матов."))
 			Player.Kind.HUMAN -> box.addView(ui.sub("Ходит человек с этого телефона."))
