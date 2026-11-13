@@ -1,0 +1,254 @@
+package ru.cersat.chessics.ui
+
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.os.Build
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.LinearLayout
+import ru.cersat.chessics.chess.P
+import ru.cersat.chessics.chess.Position
+import ru.cersat.chessics.data.Achievements
+import ru.cersat.chessics.data.Reminder
+import ru.cersat.chessics.data.Shop
+
+class ShopScreen(a: MainActivity) : Screen(a) {
+	override val tab = 2
+	private val st = a.store
+
+	override fun build(): View {
+		val box = ui.col(16, 14)
+		val head = ui.row(10)
+		head.addView(ui.title("Магазин"), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		head.addView(ui.text("💎 ${st.diamonds}", 18f, ui.t.accent, true))
+		box.addView(head)
+		box.addView(ui.sub("Алмазы дают за победы над ботами (чем сильнее бот — тем больше), задачи, дни серии и достижения."))
+
+		// заморозки
+		val fz = ui.card()
+		fz.addView(ui.row(12, IconView(a, 1, 0xFF8FD3FF.toInt(), 0xFFFFFFFF.toInt()).apply { layoutParams = LinearLayout.LayoutParams(ui.dp(44), ui.dp(44)) },
+			ui.col(0, 2, ui.text("Заморозка серии", 17f, bold = true),
+				ui.sub("Если пропустишь день, заморозка сгорит вместо серии. У тебя ${st.freezes} из ${st.maxFreezes}."))))
+		fz.addView(ui.space(10))
+		val full = st.freezes >= st.maxFreezes
+		fz.addView(ui.button(if (full) "Запас полон" else "Купить за ${Shop.FREEZE_PRICE} 💎", !full, !full && st.diamonds >= Shop.FREEZE_PRICE) {
+			if (st.buyFreeze()) { a.toast("Заморозка куплена ❄"); a.refresh() }
+		})
+		box.addView(fz)
+
+		for (cat in Shop.Cat.values()) {
+			box.addView(ui.text(cat.title, 19f, bold = true))
+			for (item in Shop.items(cat)) box.addView(itemCard(item))
+		}
+		return ui.scroll(box)
+	}
+
+	private fun preview(item: Shop.Item): View {
+		val size = ui.dp(72)
+		val bmp = Bitmap.createBitmap(if (item is Shop.Widget) size * 2 else size, size, Bitmap.Config.ARGB_8888)
+		val c = Canvas(bmp)
+		when (item) {
+			is Shop.Theme -> {
+				val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+				p.color = item.bg; c.drawRoundRect(0f, 0f, size.toFloat(), size.toFloat(), 14f, 14f, p)
+				p.color = item.card; c.drawRoundRect(size * 0.12f, size * 0.15f, size * 0.88f, size * 0.55f, 10f, 10f, p)
+				p.color = item.accent; c.drawRoundRect(size * 0.12f, size * 0.65f, size * 0.88f, size * 0.85f, 10f, 10f, p)
+				p.color = item.text; c.drawRect(size * 0.2f, size * 0.25f, size * 0.7f, size * 0.31f, p)
+				p.color = item.sub; c.drawRect(size * 0.2f, size * 0.38f, size * 0.55f, size * 0.43f, p)
+			}
+			is Shop.Board -> {
+				val pos = Position(); pos.setFen("8/8/8/8/3qk3/3KQ3/8/8 w - - 0 1")
+				c.save(); c.scale(2f, 2f, 0f, 0f); c.translate(-size * 0.375f, -size * 0.375f)
+				PieceArt.drawStatic(a, c, pos, size.toFloat(), true, item, Shop.pieces(a).set)
+				c.restore()
+			}
+			is Shop.Pieces -> {
+				val s = size / 2f
+				val ps = intArrayOf(P.make(P.WHITE, P.KING), P.make(P.BLACK, P.QUEEN), P.make(P.WHITE, P.KNIGHT), P.make(P.BLACK, P.PAWN))
+				val p = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+				ps.forEachIndexed { i, pc ->
+					val b = PieceArt.get(a, item.set, pc) ?: return@forEachIndexed
+					c.drawBitmap(b, null, android.graphics.RectF((i % 2) * s, (i / 2) * s, (i % 2 + 1) * s, (i / 2 + 1) * s), p)
+				}
+			}
+			is Shop.Widget -> {
+				ru.cersat.chessics.data.Widgets.background(c, size * 2f, size.toFloat(), item, size * 0.2f)
+				ru.cersat.chessics.data.Widgets.drawIcon(c, item.style, size * 0.45f, size / 2f, size * 0.26f, item.text, item.accent)
+				val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+				p.color = item.text; p.isFakeBoldText = true; p.textSize = size * 0.42f
+				c.drawText("${st.streak}", size * 0.85f, size * 0.66f, p)
+			}
+		}
+		val iv = ImageView(a)
+		iv.setImageBitmap(bmp)
+		iv.layoutParams = LinearLayout.LayoutParams(bmp.width, bmp.height)
+		return iv
+	}
+
+	private fun itemCard(item: Shop.Item): View {
+		val r = ui.row(14)
+		r.setPadding(ui.dp(12), ui.dp(12), ui.dp(12), ui.dp(12))
+		r.background = ui.round(ui.t.card, 18f)
+		r.addView(preview(item))
+		val owned = st.owns(item.id)
+		val sel = st.selected(item.cat) == item.id
+		val desc = when (item) {
+			is Shop.Pieces -> item.credit
+			is Shop.Widget -> "Для виджета серии и задачи дня"
+			is Shop.Theme -> "Тёмная тема приложения"
+			else -> "Цвета клеток и подсветки"
+		}
+		r.addView(ui.col(0, 2, ui.text(item.name, 16f, bold = true), ui.sub(desc, 12f)), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		val btn = when {
+			sel -> ui.button("✓", false, false) {}
+			owned -> ui.button("Выбрать", false) { choose(item) }
+			else -> ui.button("${item.price} 💎", true, st.diamonds >= item.price) {
+				if (st.buy(item)) { a.toast("Куплено: ${item.name}"); choose(item) }
+			}
+		}
+		r.addView(btn)
+		return r
+	}
+
+	private fun choose(item: Shop.Item) {
+		st.select(item.cat, item.id)
+		if (item.cat == Shop.Cat.THEME) a.restyle() else a.refresh()
+	}
+}
+
+class ProfileScreen(a: MainActivity) : Screen(a) {
+	override val tab = 3
+	private val st = a.store
+
+	override fun build(): View {
+		val box = ui.col(16, 14)
+		val head = ui.row(10)
+		head.addView(ui.title("Профиль"), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		head.addView(ui.button("⚙ Настройки", false) { a.push(SettingsScreen(a)) })
+		box.addView(head)
+
+		val c = ui.card()
+		c.addView(ui.text("Рейтинг ${st.rating}", 26f, ui.t.accent, true))
+		c.addView(ui.sub("Считается по Эло после каждой партии с ботом (рейтинг бота — его ≈Эло)"))
+		c.addView(ui.space(12))
+		val stats = listOf(
+			"Партий" to st.stat("games"), "Побед" to st.stat("wins"), "Ничьих" to st.stat("draws"), "Поражений" to st.stat("losses"),
+			"Задач" to st.stat("puzzles"), "Лучшая серия" to st.bestStreak, "Вдвоём" to st.stat("hvh"), "Подсказок" to st.stat("hints")
+		)
+		c.addView(grid(stats))
+		val best = st.stat("bestWinElo")
+		if (best > 0) { c.addView(ui.space(8)); c.addView(ui.sub("Самый сильный побеждённый бот: ≈$best Эло")) }
+		box.addView(c)
+
+		box.addView(ui.button("📜 История партий (${st.loadGames().length()})", false) { a.push(HistoryScreen(a)) })
+
+		val done = Achievements.ALL.count { st.achieved(it.id) }
+		box.addView(ui.text("Достижения · $done из ${Achievements.ALL.size}", 19f, bold = true))
+		for (ach in Achievements.ALL) {
+			val got = st.achieved(ach.id)
+			val card = ui.card(14, if (got) ui.t.card2 else ui.t.card)
+			val r = ui.row(10)
+			r.addView(ui.text(if (got) "🏆" else "🔒", 22f))
+			r.addView(ui.col(0, 2, ui.text(ach.title, 15f, bold = true), ui.sub(ach.desc, 12f)), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+			r.addView(ui.text("+${ach.reward} 💎", 13f, if (got) ui.t.accent else ui.t.sub, true))
+			card.addView(r)
+			if (!got && ach.target > 1) {
+				card.addView(ui.space(8))
+				val pr = st.progressOf(ach)
+				val big = ach.target >= 1000
+				card.addView(ui.progress(if (big) (if (pr >= ach.target) 1 else 0) else pr, if (big) 1 else ach.target))
+				if (!big) card.addView(ui.sub("$pr / ${ach.target}", 11f))
+			}
+			box.addView(card)
+		}
+		return ui.scroll(box)
+	}
+
+	private fun grid(items: List<Pair<String, Int>>): View {
+		val g = ui.col(0, 8)
+		items.chunked(4).forEach { ch ->
+			val r = ui.row(8)
+			ch.forEach { (k, v) ->
+				val cell = ui.col(0, 0, ui.text("$v", 20f, bold = true, gravity = Gravity.CENTER), ui.text(k, 11f, ui.t.sub, gravity = Gravity.CENTER))
+				cell.setPadding(0, ui.dp(8), 0, ui.dp(8))
+				cell.background = ui.round(ui.t.bg, 12f)
+				r.addView(cell, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+			}
+			g.addView(r, ui.lp())
+		}
+		return g
+	}
+}
+
+class HistoryScreen(a: MainActivity) : Screen(a) {
+	override fun build(): View {
+		val box = ui.col(16, 10)
+		box.addView(ui.row(8, ui.button("‹", false) { a.pop() }, ui.title("История")))
+		val arr = a.store.loadGames()
+		if (arr.length() == 0) box.addView(ui.sub("Пока пусто. Сыгранные партии появятся здесь."))
+		for (i in arr.length() - 1 downTo 0) {
+			val o = arr.getJSONObject(i)
+			val r = ui.row(10)
+			r.setPadding(ui.dp(14), ui.dp(12), ui.dp(10), ui.dp(12))
+			val plies = o.optString("uci").split(' ').count { it.isNotBlank() }
+			val info = ui.col(0, 2,
+				ui.text("${o.optString("w")} — ${o.optString("b")}", 15f, bold = true),
+				ui.sub("${o.optString("res")} · ${o.optString("reason")} · ${(plies + 1) / 2} ход.", 12f),
+				ui.sub(o.optString("date") + if (o.optString("tc").isNotEmpty()) " · ${o.optString("tc")}" else "", 11f))
+			r.addView(info, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+			r.addView(ui.button("🗑", false) { a.store.deleteGame(i); a.refresh() })
+			ui.clickable(r, ui.t.card, 16f) {
+				val res = when (o.optString("res")) { "1-0" -> "Победа белых"; "0-1" -> "Победа чёрных"; "1/2-1/2" -> "Ничья"; else -> "" }
+				a.push(ReviewScreen(a, o.optString("fen", Position.START), o.optString("uci"), o.optString("w"), o.optString("b"),
+					if (res.isEmpty()) "" else "$res · ${o.optString("reason")}"))
+			}
+			box.addView(r)
+		}
+		return ui.scroll(box)
+	}
+}
+
+class SettingsScreen(a: MainActivity) : Screen(a) {
+	private val st = a.store
+
+	override fun build(): View {
+		val box = ui.col(16, 10)
+		box.addView(ui.row(8, ui.button("‹", false) { a.pop() }, ui.title("Настройки")))
+		box.addView(toggle("Координаты на доске", "coords", true))
+		box.addView(toggle("Подсветка возможных ходов", "legal", true))
+		box.addView(toggle("Полоса преимущества в партии", "evalbar", true))
+		box.addView(toggle("Анимация ходов", "anim", true))
+		box.addView(toggle("Сразу превращать пешку в ферзя", "autoqueen", false))
+		box.addView(toggle("Вибрация при ходе", "vibro", true))
+		box.addView(toggle("Напоминание о серии в 20:00", "remind", true) {
+			Reminder.schedule(a)
+			if (st.flag("remind", true) && Build.VERSION.SDK_INT >= 33 &&
+				a.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+				a.requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+		})
+		val about = ui.card()
+		about.addView(ui.text("О приложении", 16f, bold = true))
+		about.addView(ui.sub("Chessics. Движок Stockfish 17.1 (GPLv3, stockfishchess.org) работает прямо на телефоне. " +
+			"Боты «Материал» и «Алгоритм» перенесены из chess-bots.js. Фигуры — из lichess: " +
+			Shop.PIECES.joinToString("; ") { it.credit } + ". Задачи сгенерированы из партий и проверены Stockfish.", 12f))
+		about.addView(ui.space(6))
+		about.addView(ui.sub("Виджеты: долгое нажатие на рабочем столе → Виджеты → Chessics («Серия» и «Задача дня»).", 12f))
+		box.addView(about)
+		return ui.scroll(box)
+	}
+
+	private fun toggle(label: String, key: String, def: Boolean, after: () -> Unit = {}): View {
+		val on = st.flag(key, def)
+		val r = ui.row(10)
+		r.setPadding(ui.dp(16), ui.dp(14), ui.dp(16), ui.dp(14))
+		r.addView(ui.text(label, 15f), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		r.addView(ui.text(if (on) "Вкл" else "Выкл", 14f, if (on) Ui.contrast(ui.t.accent) else ui.t.sub, true, Gravity.CENTER).apply {
+			setPadding(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(6))
+			background = ui.round(if (on) ui.t.accent else ui.t.card2, 14f)
+		})
+		ui.clickable(r, ui.t.card, 16f) { st.setFlag(key, !on); after(); a.refresh() }
+		return r
+	}
+}

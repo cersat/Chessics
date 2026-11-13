@@ -1,0 +1,57 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache Stockfish nets
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/*.nnue
+          key: nnue-1c0000000000-37f18f62d772
+
+      - name: Build
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+
+      - name: Rename
+        id: v
+        run: |
+          V=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          echo "version=$V" >> $GITHUB_OUTPUT
+          cp app/build/outputs/apk/release/app-release.apk Chessics-$V.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Chessics-${{ steps.v.outputs.version }}
+          path: Chessics-*.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Chessics ${{ steps.v.outputs.version }}
+          make_latest: true
+          files: Chessics-*.apk
