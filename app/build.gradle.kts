@@ -111,6 +111,7 @@ val ndkDir = androidComponents.sdkComponents.ndkDirectory
 val buildStockfish by tasks.registering {
 	dependsOn(downloadNets)
 	inputs.dir(sfSrc)
+	inputs.dir(File(sfSrc.parentFile, "scripts"))
 	outputs.dir(sfOut)
 	doLast {
 		check(File(sfSrc, "Makefile").exists()) { "Нет исходников Stockfish: выполни git submodule update --init" }
@@ -119,9 +120,11 @@ val buildStockfish by tasks.registering {
 		val out = sfOut.get().asFile.apply { mkdirs() }
 		val jobs = Runtime.getRuntime().availableProcessors().toString()
 		for ((arch, lib) in listOf("armv8" to "libstockfish.so", "armv8-dotprod" to "libstockfish_dp.so")) {
-			val work = layout.buildDirectory.dir("stockfish/work/$arch").get().asFile
-			work.deleteRecursively()
-			sfSrc.copyRecursively(work)
+			val root = layout.buildDirectory.dir("stockfish/work/$arch").get().asFile
+			root.deleteRecursively()
+			sfSrc.copyRecursively(File(root, "src"))
+			File(sfSrc.parentFile, "scripts").copyRecursively(File(root, "scripts"))
+			val work = File(root, "src")
 			for (n in nets) File(netsDir, n).copyTo(File(work, n), true)
 			fun run(vararg cmd: String) {
 				val pb = ProcessBuilder(*cmd).directory(work).redirectErrorStream(true)
