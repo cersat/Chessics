@@ -439,6 +439,7 @@ class Position {
 	}
 
 	fun unmake() {
+		if (stackSize == 0) return // у копии позиции истории ходов нет — откатывать нечего
 		stackSize--
 		hashCount--
 		val m = stMove[stackSize]

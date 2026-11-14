@@ -195,6 +195,7 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 			else pos.legalMoves().first { M.from(it) == M.from(base) && M.to(it) == M.to(base) && M.promo(it) == P.QUEEN }
 		}
 		val expected = if (!offLine) pos.parseUci(pz.moves[step]) else 0
+		val before = pos.copy()
 		play(m)
 		val mate = Tactics.isMate(pos)
 		if (mate && pz.mate > 0) { accept(m, true); return }
@@ -208,7 +209,6 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 		board.setPosition(pos.copy(), m, true)
 		update("Проверяю ход…")
 		val p = pos.copy()
-		val before = pos.copy().also { it.unmake() }
 		Stockfish.analysis.exec.execute {
 			val sign = if (hero == P.WHITE) 1 else -1
 			val after = Stockfish.analysis.analyse(a, p.fen(), "", p.side == P.WHITE, "depth 16")?.firstOrNull()
