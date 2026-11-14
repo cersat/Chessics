@@ -279,7 +279,8 @@ object Tactics {
 		return best
 	}
 
-	fun isMate(pos: Position) = pos.inCheck() && !pos.hasLegalMove()
+	// мат или победа по правилу варианта (король в центре, третий шах) для только что походившей стороны
+	fun isMate(pos: Position) = pos.variantWinner() == (pos.side xor 1) || (pos.inCheck() && !pos.hasLegalMove())
 
 	fun hasMateInOne(pos: Position): Boolean {
 		for (m in pos.legalMoves()) {
@@ -361,8 +362,15 @@ class MaterialBot(private val depth: Int) : Bot {
 	private fun isDraw(pos: Position) = pos.half >= 100 || pos.repetitions() >= 2 || pos.insufficientMaterial()
 
 	// форсированный счёт взятий: «можно не брать» (stand pat), иначе — только взятия
+	private fun variantScore(pos: Position, ply: Int): Int? {
+		val w = pos.variantWinner()
+		if (w < 0) return null
+		return if (w == P.WHITE) 100000 - ply else -100000 + ply
+	}
+
 	private fun quiesce(pos: Position, a0: Int, b0: Int, maximizing: Boolean, ply: Int): Int {
 		checkTime()
+		variantScore(pos, ply)?.let { return it }
 		var alpha = a0; var beta = b0
 		if (ply >= 120) return material(pos)
 		val inCheck = pos.inCheck()
@@ -389,6 +397,7 @@ class MaterialBot(private val depth: Int) : Bot {
 	private fun search(pos: Position, depth0: Int, a0: Int, b0: Int, maximizing: Boolean, ply: Int): Int {
 		checkTime()
 		var alpha = a0; var beta = b0
+		variantScore(pos, ply)?.let { return it }
 		if (ply > 0 && isDraw(pos)) return 0
 		val inCheck = pos.inCheck()
 		val depth = if (inCheck && ply < 40) depth0 + 1 else depth0

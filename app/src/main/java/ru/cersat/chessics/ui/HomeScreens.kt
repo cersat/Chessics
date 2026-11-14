@@ -14,6 +14,7 @@ import ru.cersat.chessics.bots.AlgoBot
 import ru.cersat.chessics.bots.Player
 import ru.cersat.chessics.chess.P
 import ru.cersat.chessics.chess.Position
+import ru.cersat.chessics.chess.V
 import ru.cersat.chessics.data.Puzzles
 import ru.cersat.chessics.data.Shop
 import ru.cersat.chessics.data.Store
@@ -26,22 +27,28 @@ data class GameConfig(
 	val minutes: Int = 0,
 	val inc: Int = 0,
 	val faceToFace: Boolean = false,
-	val startFen: String = Position.START
+	val startFen: String = Position.START,
+	val variant: Int = V.STANDARD,
+	val training: String = "" // id позиции тренажёра эндшпиля
 ) {
+	// Stockfish знает только обычные шахматы и Chess960
+	val stockfishOk get() = variant == V.STANDARD || variant == V.CHESS960
 	val hasClock get() = minutes > 0
 	val hvh get() = white.isHuman && black.isHuman
+	val remote get() = white.kind == Player.Kind.REMOTE || black.kind == Player.Kind.REMOTE
 	val bot: Player? get() = when {
+		remote -> null
 		white.isHuman && !black.isHuman -> black
 		black.isHuman && !white.isHuman -> white
 		else -> null
 	}
 	val humanColor: Int get() = if (white.isHuman && !black.isHuman) P.WHITE else if (black.isHuman && !white.isHuman) P.BLACK else -1
 
-	fun toJson() = JSONObject().put("w", white.encode()).put("b", black.encode()).put("m", minutes).put("i", inc).put("f", faceToFace).put("fen", startFen)
+	fun toJson() = JSONObject().put("w", white.encode()).put("b", black.encode()).put("m", minutes).put("i", inc).put("f", faceToFace).put("fen", startFen).put("v", variant).put("tr", training)
 
 	companion object {
 		fun fromJson(o: JSONObject) = GameConfig(Player.decode(o.getString("w")), Player.decode(o.getString("b")),
-			o.optInt("m"), o.optInt("i"), o.optBoolean("f"), o.optString("fen", Position.START))
+			o.optInt("m"), o.optInt("i"), o.optBoolean("f"), o.optString("fen", Position.START), o.optInt("v"), o.optString("tr", ""))
 
 		val CLOCKS = listOf(0 to 0, 1 to 0, 3 to 2, 5 to 0, 10 to 0, 15 to 10, 30 to 0)
 		fun clockLabel(m: Int, i: Int) = if (m == 0) "Без часов" else "$m+$i"
@@ -68,6 +75,7 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		head.addView(pill("❄ ${st.freezes}"))
 		box.addView(head)
 		box.addView(streakCard())
+		box.addView(goalsCard())
 
 		val saved = st.str("current", "")
 		if (saved.isNotEmpty()) {
@@ -93,6 +101,12 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		})
 		box.addView(modeCard("🌐", "Онлайн · Lichess", "Живые соперники, вызов друга, Stockfish на сервере lichess. Нужен свой аккаунт") {
 			a.push(LichessScreen(a))
+		})
+		box.addView(modeCard("📡", "По Wi-Fi или Bluetooth", "Партия между двумя телефонами рядом, без интернета") {
+			a.push(LanScreen(a))
+		})
+		box.addView(modeCard("📚", "Тренировка", "Дебюты ход за ходом и эндшпиль против Stockfish") {
+			a.push(TrainingScreen(a))
 		})
 		box.addView(modeCard("⚙", "Своя партия", "Любой игрок за каждую сторону: бот против бота, человек за обе стороны…") {
 			a.push(SetupScreen(a, SetupScreen.Mode.CUSTOM))
@@ -146,6 +160,31 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		return c
 	}
 
+	private fun goalsCard(): View {
+		val c = ui.card()
+		c.addView(ui.text("🎯 Цели", 17f, bold = true))
+		for (daily in listOf(true, false)) {
+			c.addView(ui.space(8))
+			val list = if (daily) ru.cersat.chessics.data.Goals.daily(st.today) else ru.cersat.chessics.data.Goals.weekly(st.week)
+			c.addView(ui.sub(if (daily) "На сегодня · все три — ещё +10 💎" else "На неделю", 12f))
+			list.forEachIndexed { i, g ->
+				val prog = minOf(st.goalProgress(daily, i), g.target)
+				val claimed = st.goalClaimed(daily, i)
+				val r = ui.row(10)
+				r.setPadding(0, ui.dp(6), 0, ui.dp(2))
+				val left = ui.col(0, 4, ui.text(g.title, 14f, if (claimed) ui.t.sub else ui.t.text), ui.progress(prog, g.target))
+				r.addView(left, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+				when {
+					claimed -> r.addView(ui.text("✓", 18f, ui.t.accent, true))
+					prog >= g.target -> r.addView(ui.button("+${g.reward} 💎") { val got = st.claimGoal(daily, i); if (got > 0) a.toast("+$got 💎"); a.refresh() })
+					else -> r.addView(ui.text("${if (g.max) "лучшее " else ""}$prog/${g.target}", 12f, ui.t.sub))
+				}
+				c.addView(r)
+			}
+		}
+		return c
+	}
+
 	private fun modeCard(icon: String, title: String, desc: String, onClick: () -> Unit): View {
 		val r = ui.row(14)
 		r.setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(16))
@@ -188,6 +227,10 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 	private var f2f = st.flag("setupF2F", true)
 	private var white = Player.decode(st.str("setupW", "HUMAN:0"))
 	private var black = Player.decode(st.str("setupB", "MATERIAL:3"))
+	private var variant = st.str("setupVariant", "0").toInt()
+	private val sfOk get() = variant == V.STANDARD || variant == V.CHESS960
+
+	private fun fixPlayer(p: Player) = if (!sfOk && p.kind == Player.Kind.STOCKFISH) Player(Player.Kind.MATERIAL, 3) else p
 
 	override fun build(): View {
 		val box = ui.col(16, 14)
@@ -196,6 +239,15 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 			Mode.HVH -> "Вдвоём на одном телефоне"
 			Mode.CUSTOM -> "Своя партия"
 		})))
+		val vc = ui.col(0, 8)
+		vc.addView(ui.chips(V.NAMES.mapIndexed { i, n -> n to (i == variant) }, 4) { variant = it; bot = fixPlayer(bot); white = fixPlayer(white); black = fixPlayer(black); a.refresh() })
+		vc.addView(ui.sub(when (variant) {
+			V.CHESS960 -> "Фигуры на первой линии расставлены случайно (одна из 960 позиций), рокировка — как в Chess960: нажми королём на свою ладью."
+			V.THREE_CHECK -> "Побеждает тот, кто первым объявит три шаха (или поставит мат). Stockfish в этот вариант не играет — только наши боты."
+			V.KOTH -> "Побеждает тот, чей король первым дойдёт до центра (d4, e4, d5, e5), или мат. Stockfish в этот вариант не играет — только наши боты."
+			else -> "Обычные шахматы."
+		}))
+		box.addView(section("Вариант", vc))
 		when (mode) {
 			Mode.BOT -> {
 				box.addView(section("Соперник", playerPicker(bot, false) { bot = it; a.refresh() }))
@@ -232,7 +284,7 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 		val box = ui.col(0, 10)
 		val fams = ArrayList<Pair<String, Player.Kind>>()
 		if (allowHuman) fams.add("Человек" to Player.Kind.HUMAN)
-		fams.add("Stockfish" to Player.Kind.STOCKFISH)
+		if (sfOk) fams.add("Stockfish" to Player.Kind.STOCKFISH)
 		fams.add("Материал" to Player.Kind.MATERIAL)
 		fams.add("Алгоритм" to Player.Kind.ALGO)
 		fams.add("Случайный" to Player.Kind.RANDOM)
@@ -242,7 +294,7 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 				Player.Kind.STOCKFISH -> Player(Player.Kind.STOCKFISH, 1350)
 				Player.Kind.MATERIAL -> Player(Player.Kind.MATERIAL, 3)
 				Player.Kind.ALGO -> Player(Player.Kind.ALGO, 3)
-				Player.Kind.RANDOM -> Player(Player.Kind.RANDOM, 0)
+				else -> Player(Player.Kind.RANDOM, 0)
 			})
 		})
 		when (cur.kind) {
@@ -261,6 +313,7 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 			}
 			Player.Kind.RANDOM -> box.addView(ui.sub("Ходит случайно. Для разминки и проверки матов."))
 			Player.Kind.HUMAN -> box.addView(ui.sub("Ходит человек с этого телефона."))
+			Player.Kind.REMOTE -> {}
 		}
 		return box
 	}
@@ -268,16 +321,18 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 	private fun start() {
 		val (m, inc) = GameConfig.CLOCKS[clock]
 		st.setStr("setupClock_$mode", "$clock")
+		st.setStr("setupVariant", "$variant")
+		val fen = if (variant == V.CHESS960) V.random960() else Position.START
 		val cfg = when (mode) {
 			Mode.BOT -> {
 				st.setStr("setupBot", bot.encode()); st.setStr("setupColor", "$color")
 				val humanWhite = when (color) { 0 -> true; 1 -> false; else -> Math.random() < 0.5 }
-				if (humanWhite) GameConfig(Player.HUMAN, bot, m, inc) else GameConfig(bot, Player.HUMAN, m, inc)
+				if (humanWhite) GameConfig(Player.HUMAN, bot, m, inc, false, fen, variant) else GameConfig(bot, Player.HUMAN, m, inc, false, fen, variant)
 			}
-			Mode.HVH -> { st.setFlag("setupF2F", f2f); GameConfig(Player.HUMAN, Player.HUMAN, m, inc, f2f) }
+			Mode.HVH -> { st.setFlag("setupF2F", f2f); GameConfig(Player.HUMAN, Player.HUMAN, m, inc, f2f, fen, variant) }
 			Mode.CUSTOM -> {
 				st.setStr("setupW", white.encode()); st.setStr("setupB", black.encode())
-				GameConfig(white, black, m, inc, false)
+				GameConfig(white, black, m, inc, false, fen, variant)
 			}
 		}
 		a.replace(GameScreen(a, cfg, null))

@@ -11,7 +11,7 @@ object San {
 		val type = P.type(p)
 		val sb = StringBuilder()
 		if (M.isCastle(m)) {
-			sb.append(if (P.file(to) == 6) "O-O" else "O-O-O")
+			sb.append(if (pos.isShortCastle(m)) "O-O" else "O-O-O")
 		} else {
 			val capture = pos.sq[to] != 0 || M.isEp(m)
 			if (type == P.PAWN) {
@@ -67,6 +67,11 @@ class GameResult(val outcome: Outcome, val reason: String) {
 object Rules {
 	// Результат по позиции (без времени и сдачи)
 	fun status(pos: Position): GameResult {
+		val vw = pos.variantWinner()
+		if (vw >= 0) {
+			val why = if (pos.variant == V.KOTH) "король в центре" else "три шаха"
+			return GameResult(if (vw == P.WHITE) Outcome.WHITE_WINS else Outcome.BLACK_WINS, why)
+		}
 		if (!pos.hasLegalMove()) {
 			return if (pos.inCheck()) {
 				if (pos.side == P.WHITE) GameResult(Outcome.BLACK_WINS, "мат") else GameResult(Outcome.WHITE_WINS, "мат")
@@ -80,11 +85,11 @@ object Rules {
 }
 
 // Партия: стартовая позиция + список ходов. Позволяет отмену и пересчёт.
-class GameRecord(val startFen: String = Position.START) {
+class GameRecord(val startFen: String = Position.START, val variant: Int = V.STANDARD) {
 	val moves = ArrayList<Int>()
 	val sanEn = ArrayList<String>()
 	val sanRu = ArrayList<String>()
-	val pos = Position().also { it.setFen(startFen) }
+	val pos = Position.of(startFen, variant)
 
 	fun play(m: Int) {
 		sanEn.add(San.of(pos, m, false))
@@ -103,24 +108,24 @@ class GameRecord(val startFen: String = Position.START) {
 	}
 
 	fun positionAt(ply: Int): Position {
-		val p = Position()
-		p.setFen(startFen)
+		val p = Position.of(startFen, variant)
 		for (i in 0 until minOf(ply, moves.size)) p.make(moves[i])
 		return p
 	}
 
 	val lastMove: Int get() = if (moves.isEmpty()) 0 else moves[moves.size - 1]
 
-	fun startSide(): Int = Position().also { it.setFen(startFen) }.side
+	fun startSide(): Int = Position.of(startFen, variant).side
 
 	fun pgn(white: String, black: String, result: String, date: String): String {
 		val sb = StringBuilder()
 		sb.append("[Event \"Chessics\"]\n[Date \"").append(date).append("\"]\n")
 		sb.append("[White \"").append(white).append("\"]\n[Black \"").append(black).append("\"]\n")
 		sb.append("[Result \"").append(result).append("\"]\n")
+		if (variant != V.STANDARD) sb.append("[Variant \"").append(arrayOf("Standard", "Chess960", "Three-check", "King of the Hill")[variant]).append("\"]\n")
 		if (startFen != Position.START) sb.append("[SetUp \"1\"]\n[FEN \"").append(startFen).append("\"]\n")
 		sb.append('\n')
-		val p = Position(); p.setFen(startFen)
+		val p = Position.of(startFen, variant)
 		var num = p.full
 		var white0 = p.side == P.WHITE
 		for (i in sanEn.indices) {
@@ -137,8 +142,8 @@ class GameRecord(val startFen: String = Position.START) {
 	fun uciList(): String = moves.joinToString(" ") { M.uci(it) }
 
 	companion object {
-		fun fromUci(startFen: String, uci: String): GameRecord {
-			val g = GameRecord(startFen)
+		fun fromUci(startFen: String, uci: String, variant: Int = V.STANDARD): GameRecord {
+			val g = GameRecord(startFen, variant)
 			for (u in uci.split(' ')) {
 				if (u.isBlank()) continue
 				val m = g.pos.parseUci(u)

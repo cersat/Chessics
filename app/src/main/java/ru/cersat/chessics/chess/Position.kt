@@ -77,6 +77,35 @@ object Zobrist {
 	}
 }
 
+// Варианты: обычные шахматы, Chess960, Три шаха, Царь горы
+object V {
+	const val STANDARD = 0
+	const val CHESS960 = 1
+	const val THREE_CHECK = 2
+	const val KOTH = 3
+	val NAMES = arrayOf("Классика", "Chess960", "Три шаха", "Царь горы")
+	val LICHESS = arrayOf("standard", "chess960", "threeCheck", "kingOfTheHill")
+	val CENTER = intArrayOf(27, 28, 35, 36)
+
+	fun fromLichess(key: String) = LICHESS.indexOf(key).let { if (it < 0) STANDARD else it }
+
+	// случайная стартовая расстановка Chess960
+	fun random960(): String {
+		val r = java.util.Random()
+		val row = CharArray(8) { ' ' }
+		val dark = (0..7).filter { it % 2 == 0 }; val light = (0..7).filter { it % 2 == 1 }
+		row[dark[r.nextInt(4)]] = 'b'; row[light[r.nextInt(4)]] = 'b'
+		fun free() = (0..7).filter { row[it] == ' ' }
+		row[free()[r.nextInt(6)]] = 'q'
+		row[free()[r.nextInt(5)]] = 'n'
+		row[free()[r.nextInt(4)]] = 'n'
+		val rest = free()
+		row[rest[0]] = 'r'; row[rest[1]] = 'k'; row[rest[2]] = 'r'
+		val black = String(row)
+		return "$black/pppppppp/8/8/8/8/PPPPPPPP/${black.uppercase()} w KQkq - 0 1"
+	}
+}
+
 class Position {
 	val sq = IntArray(64)
 	var side = P.WHITE
@@ -86,6 +115,10 @@ class Position {
 	var full = 1
 	var hash = 0L
 	val king = IntArray(2)
+	var variant = V.STANDARD
+	// клетки ладей для рокировок: 0 — белые короткая, 1 — белые длинная, 2 — чёрные короткая, 3 — чёрные длинная
+	val castleRook = intArrayOf(7, 0, 63, 56)
+	val checks = IntArray(2) // сколько шахов дала каждая сторона (Три шаха)
 
 	// стек отмены
 	private var stackSize = 0
@@ -95,6 +128,7 @@ class Position {
 	private val stEp = IntArray(1024)
 	private val stHalf = IntArray(1024)
 	private val stHash = LongArray(1024)
+	private val stChecks = IntArray(2048)
 
 	// история хэшей для троекратного повторения
 	val hashHistory = LongArray(2048)
@@ -105,6 +139,9 @@ class Position {
 		System.arraycopy(sq, 0, p.sq, 0, 64)
 		p.side = side; p.castle = castle; p.ep = ep; p.half = half; p.full = full
 		p.hash = hash; p.king[0] = king[0]; p.king[1] = king[1]
+		p.variant = variant
+		System.arraycopy(castleRook, 0, p.castleRook, 0, 4)
+		p.checks[0] = checks[0]; p.checks[1] = checks[1]
 		System.arraycopy(hashHistory, 0, p.hashHistory, 0, hashCount)
 		p.hashCount = hashCount
 		return p
@@ -145,11 +182,26 @@ class Position {
 		}
 		side = if (parts[1] == "b") P.BLACK else P.WHITE
 		castle = 0
-		if (parts.size > 2) for (c in parts[2]) when (c) {
-			'K' -> castle = castle or 1
-			'Q' -> castle = castle or 2
-			'k' -> castle = castle or 4
-			'q' -> castle = castle or 8
+		castleRook[0] = 7; castleRook[1] = 0; castleRook[2] = 63; castleRook[3] = 56
+		checks[0] = 0; checks[1] = 0
+		if (parts.size > 2) for (c in parts[2]) {
+			if (c == '-') continue
+			val col = if (c.isUpperCase()) P.WHITE else P.BLACK
+			val rank = if (col == P.WHITE) 0 else 7
+			val kf = P.file(king[col])
+			val rook = P.make(col, P.ROOK)
+			var file = -1
+			var short: Boolean
+			when (c.lowercaseChar()) {
+				'k' -> { short = true; for (f2 in 7 downTo kf + 1) if (sq[P.sq(f2, rank)] == rook) { file = f2; break } }
+				'q' -> { short = false; for (f2 in 0 until kf) if (sq[P.sq(f2, rank)] == rook) { file = f2; break } }
+				in 'a'..'h' -> { file = c.lowercaseChar() - 'a'; short = file > kf }
+				else -> continue
+			}
+			if (file < 0) continue
+			val idx = col * 2 + if (short) 0 else 1
+			castleRook[idx] = P.sq(file, rank)
+			castle = castle or (1 shl idx)
 		}
 		ep = if (parts.size > 3) P.parse(parts[3]) else -1
 		half = parts.getOrNull(4)?.toIntOrNull() ?: 0
@@ -177,10 +229,18 @@ class Position {
 		}
 		sb.append(if (side == P.WHITE) " w " else " b ")
 		var c = ""
-		if (castle and 1 != 0) c += "K"
-		if (castle and 2 != 0) c += "Q"
-		if (castle and 4 != 0) c += "k"
-		if (castle and 8 != 0) c += "q"
+		if (variant == V.CHESS960) {
+			// Shredder-FEN: буква вертикали ладьи
+			for (idx in 0..3) if (castle and (1 shl idx) != 0) {
+				val ch = 'a' + P.file(castleRook[idx])
+				c += if (idx < 2) ch.uppercaseChar() else ch
+			}
+		} else {
+			if (castle and 1 != 0) c += "K"
+			if (castle and 2 != 0) c += "Q"
+			if (castle and 4 != 0) c += "k"
+			if (castle and 8 != 0) c += "q"
+		}
 		sb.append(if (c.isEmpty()) "-" else c)
 		sb.append(' ').append(if (ep >= 0) P.name(ep) else "-")
 		sb.append(' ').append(half).append(' ').append(full)
@@ -324,22 +384,45 @@ class Position {
 		return n
 	}
 
+	// Рокировка для обычных шахмат и Chess960. В Chess960 ход кодируется как «король на свою ладью».
 	private fun castles(out: IntArray, n0: Int, me: Int): Int {
 		var n = n0
 		val them = me xor 1
-		if (me == P.WHITE) {
-			if (castle and 1 != 0 && sq[5] == 0 && sq[6] == 0 && sq[4] == P.make(me, P.KING) && sq[7] == P.make(me, P.ROOK)
-				&& !attacked(4, them) && !attacked(5, them) && !attacked(6, them)) out[n++] = M.make(4, 6, 0, M.F_CASTLE)
-			if (castle and 2 != 0 && sq[3] == 0 && sq[2] == 0 && sq[1] == 0 && sq[4] == P.make(me, P.KING) && sq[0] == P.make(me, P.ROOK)
-				&& !attacked(4, them) && !attacked(3, them) && !attacked(2, them)) out[n++] = M.make(4, 2, 0, M.F_CASTLE)
-		} else {
-			if (castle and 4 != 0 && sq[61] == 0 && sq[62] == 0 && sq[60] == P.make(me, P.KING) && sq[63] == P.make(me, P.ROOK)
-				&& !attacked(60, them) && !attacked(61, them) && !attacked(62, them)) out[n++] = M.make(60, 62, 0, M.F_CASTLE)
-			if (castle and 8 != 0 && sq[59] == 0 && sq[58] == 0 && sq[57] == 0 && sq[60] == P.make(me, P.KING) && sq[56] == P.make(me, P.ROOK)
-				&& !attacked(60, them) && !attacked(59, them) && !attacked(58, them)) out[n++] = M.make(60, 58, 0, M.F_CASTLE)
+		val rank = if (me == P.WHITE) 0 else 7
+		val kFrom = king[me]
+		if (P.rank(kFrom) != rank || sq[kFrom] != P.make(me, P.KING)) return n
+		for (idx in me * 2..me * 2 + 1) {
+			if (castle and (1 shl idx) == 0) continue
+			val rookSq = castleRook[idx]
+			if (sq[rookSq] != P.make(me, P.ROOK)) continue
+			val short = idx % 2 == 0
+			val kt = P.sq(if (short) 6 else 2, rank)
+			val rt = P.sq(if (short) 5 else 3, rank)
+			val lo = minOf(minOf(P.file(kFrom), P.file(kt)), minOf(P.file(rookSq), P.file(rt)))
+			val hi = maxOf(maxOf(P.file(kFrom), P.file(kt)), maxOf(P.file(rookSq), P.file(rt)))
+			var ok = true
+			for (f in lo..hi) {
+				val s = P.sq(f, rank)
+				if (s != kFrom && s != rookSq && sq[s] != 0) { ok = false; break }
+			}
+			if (!ok || attacked(kFrom, them)) continue
+			val step = if (P.file(kt) > P.file(kFrom)) 1 else -1
+			var f = P.file(kFrom)
+			while (f != P.file(kt)) {
+				f += step
+				if (attacked(P.sq(f, rank), them)) { ok = false; break }
+			}
+			if (!ok) continue
+			out[n++] = M.make(kFrom, if (variant == V.CHESS960) rookSq else kt, 0, M.F_CASTLE)
 		}
 		return n
 	}
+
+	fun isShortCastle(m: Int): Boolean =
+		if (variant == V.CHESS960) P.file(M.to(m)) > P.file(M.from(m)) else P.file(M.to(m)) == 6
+
+	private fun castleRookSq(m: Int, me: Int): Int =
+		if (variant == V.CHESS960) M.to(m) else castleRook[me * 2 + if (isShortCastle(m)) 0 else 1]
 
 	private val tmp = IntArray(256)
 
@@ -394,15 +477,34 @@ class Position {
 		val from = M.from(m); val to = M.to(m)
 		val p = sq[from]
 		val me = side
-		var cap = sq[to]
+		var cap = if (M.isCastle(m)) 0 else sq[to]
 		stMove[stackSize] = m
 		stCastle[stackSize] = castle
 		stEp[stackSize] = ep
 		stHalf[stackSize] = half
 		stHash[stackSize] = hash
+		stChecks[stackSize * 2] = checks[0]; stChecks[stackSize * 2 + 1] = checks[1]
 
 		hash = hash xor Zobrist.castle[castle]
 		if (ep >= 0) hash = hash xor Zobrist.ep[P.file(ep)]
+
+		if (M.isCastle(m)) {
+			val rank = if (me == P.WHITE) 0 else 7
+			val short = isShortCastle(m)
+			val rookSq = castleRookSq(m, me)
+			val kt = P.sq(if (short) 6 else 2, rank)
+			val rt = P.sq(if (short) 5 else 3, rank)
+			stCap[stackSize] = 0
+			stackSize++
+			put(from, 0); put(rookSq, 0)
+			put(kt, P.make(me, P.KING)); put(rt, P.make(me, P.ROOK))
+			king[me] = kt
+			castle = castle and (3 shl (me * 2)).inv()
+			ep = -1
+			half++
+			finishMake(me)
+			return
+		}
 
 		if (M.isEp(m)) {
 			val capSq = if (me == P.WHITE) to - 8 else to + 8
@@ -416,22 +518,20 @@ class Position {
 		val promo = M.promo(m)
 		put(to, if (promo != 0) P.make(me, promo) else p)
 
-		if (M.isCastle(m)) {
-			when (to) {
-				6 -> { put(7, 0); put(5, P.make(me, P.ROOK)) }
-				2 -> { put(0, 0); put(3, P.make(me, P.ROOK)) }
-				62 -> { put(63, 0); put(61, P.make(me, P.ROOK)) }
-				58 -> { put(56, 0); put(59, P.make(me, P.ROOK)) }
-			}
+		if (P.type(p) == P.KING) {
+			king[me] = to
+			castle = castle and (3 shl (me * 2)).inv()
 		}
-		if (P.type(p) == P.KING) king[me] = to
-
-		castle = castle and CASTLE_MASK[from] and CASTLE_MASK[to]
+		if (castle != 0) for (idx in 0..3) if (castleRook[idx] == from || castleRook[idx] == to) castle = castle and (1 shl idx).inv()
 		ep = if (M.flags(m) and M.F_DOUBLE != 0) (from + to) / 2 else -1
 		half = if (P.type(p) == P.PAWN || cap != 0) 0 else half + 1
+		finishMake(me)
+	}
+
+	private fun finishMake(me: Int) {
 		if (me == P.BLACK) full++
 		side = me xor 1
-
+		if (variant == V.THREE_CHECK && attacked(king[side], me)) checks[me]++
 		hash = hash xor Zobrist.castle[castle] xor Zobrist.side
 		if (ep >= 0) hash = hash xor Zobrist.ep[P.file(ep)]
 		if (hashCount < hashHistory.size) hashHistory[hashCount] = hash
@@ -447,6 +547,19 @@ class Position {
 		side = side xor 1
 		val me = side
 		if (me == P.BLACK) full--
+		checks[0] = stChecks[stackSize * 2]; checks[1] = stChecks[stackSize * 2 + 1]
+		if (M.isCastle(m)) {
+			val rank = if (me == P.WHITE) 0 else 7
+			val short = isShortCastle(m)
+			val rookSq = castleRookSq(m, me)
+			sq[P.sq(if (short) 6 else 2, rank)] = 0
+			sq[P.sq(if (short) 5 else 3, rank)] = 0
+			sq[from] = P.make(me, P.KING)
+			sq[rookSq] = P.make(me, P.ROOK)
+			king[me] = from
+			castle = stCastle[stackSize]; ep = stEp[stackSize]; half = stHalf[stackSize]; hash = stHash[stackSize]
+			return
+		}
 		val moved = if (M.promo(m) != 0) P.make(me, P.PAWN) else sq[to]
 		sq[from] = moved
 		sq[to] = 0
@@ -455,14 +568,6 @@ class Position {
 			val capSq = if (me == P.WHITE) to - 8 else to + 8
 			sq[capSq] = cap
 		} else sq[to] = cap
-		if (M.isCastle(m)) {
-			when (to) {
-				6 -> { sq[5] = 0; sq[7] = P.make(me, P.ROOK) }
-				2 -> { sq[3] = 0; sq[0] = P.make(me, P.ROOK) }
-				62 -> { sq[61] = 0; sq[63] = P.make(me, P.ROOK) }
-				58 -> { sq[59] = 0; sq[56] = P.make(me, P.ROOK) }
-			}
-		}
 		if (P.type(moved) == P.KING) king[me] = from
 		castle = stCastle[stackSize]
 		ep = stEp[stackSize]
@@ -485,7 +590,18 @@ class Position {
 		return c
 	}
 
+	// Победа по правилу варианта: возвращает цвет победителя или −1
+	fun variantWinner(): Int {
+		when (variant) {
+			V.KOTH -> for (c in 0..1) if (king[c] in V.CENTER) return c
+			V.THREE_CHECK -> for (c in 0..1) if (checks[c] >= 3) return c
+		}
+		return -1
+	}
+
 	fun insufficientMaterial(): Boolean {
+		// в «Трёх шахах» и «Царе горы» выиграть можно и без матующего материала
+		if (variant == V.THREE_CHECK || variant == V.KOTH) return false
 		var minors = 0
 		val bishopColors = IntArray(2)
 		var bishops = 0
@@ -521,7 +637,12 @@ class Position {
 	fun parseUci(u: String): Int {
 		val legal = legalMoves()
 		for (m in legal) if (M.uci(m) == u) return m
-		// O-O может прийти как «взятие своей ладьи» — не наш случай, но e1h1 поддержим
+		// Chess960: рокировку принимаем и как «король на g/c-вертикаль»
+		if (variant == V.CHESS960) for (m in legal) {
+			if (!M.isCastle(m)) continue
+			val rank = P.rank(M.from(m))
+			if (P.name(M.from(m)) + P.name(P.sq(if (isShortCastle(m)) 6 else 2, rank)) == u) return m
+		}
 		return 0
 	}
 
@@ -531,11 +652,8 @@ class Position {
 		val KING = arrayOf(intArrayOf(1, 0), intArrayOf(1, 1), intArrayOf(0, 1), intArrayOf(-1, 1), intArrayOf(-1, 0), intArrayOf(-1, -1), intArrayOf(0, -1), intArrayOf(1, -1))
 		val DIAG = arrayOf(intArrayOf(1, 1), intArrayOf(1, -1), intArrayOf(-1, 1), intArrayOf(-1, -1))
 		val ORTHO = arrayOf(intArrayOf(1, 0), intArrayOf(-1, 0), intArrayOf(0, 1), intArrayOf(0, -1))
-		val CASTLE_MASK = IntArray(64) { 15 }.also {
-			it[0] = 15 and 2.inv(); it[4] = 15 and 3.inv(); it[7] = 15 and 1.inv()
-			it[56] = 15 and 8.inv(); it[60] = 15 and 12.inv(); it[63] = 15 and 4.inv()
-		}
 
 		fun start() = Position().also { it.setFen(START) }
+		fun of(fen: String, variant: Int = V.STANDARD) = Position().also { it.variant = variant; it.setFen(fen) }
 	}
 }

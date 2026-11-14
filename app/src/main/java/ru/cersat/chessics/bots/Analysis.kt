@@ -65,18 +65,18 @@ object Judge {
 	}
 
 	// Мгновенная оценка одного хода во время партии (для анимации бриллианта)
-	fun judgeLive(ctx: Context, startFen: String, uciBefore: String, before: Position, m: Int, done: (MoveClass?) -> Unit) {
+	fun judgeLive(ctx: Context, startFen: String, uciBefore: String, before: Position, m: Int, c960: Boolean, done: (MoveClass?) -> Unit) {
 		val main = Handler(Looper.getMainLooper())
 		val e = Stockfish.analysis
 		e.exec.execute {
-			val lines = e.analyse(ctx, startFen, uciBefore, before.side == P.WHITE, "movetime 350", 2)
+			val lines = e.analyse(ctx, startFen, uciBefore, before.side == P.WHITE, "movetime 350", 2, c960)
 			val after = before.copy().also { it.make(m) }
 			val st = Rules.status(after)
 			val afterScore = when (st.outcome) {
 				Outcome.WHITE_WINS -> 10000
 				Outcome.BLACK_WINS -> -10000
 				Outcome.DRAW -> 0
-				else -> e.analyse(ctx, startFen, (uciBefore + " " + M.uci(m)).trim(), after.side == P.WHITE, "movetime 350")?.firstOrNull()?.score
+				else -> e.analyse(ctx, startFen, (uciBefore + " " + M.uci(m)).trim(), after.side == P.WHITE, "movetime 350", 1, c960)?.firstOrNull()?.score
 			}
 			val cls = if (lines == null || afterScore == null) null else classify(before, m, lines.getOrNull(0), lines.getOrNull(1), afterScore)
 			main.post { done(cls) }
@@ -94,7 +94,7 @@ object Analyzer {
 	private val failed = HashMap<String, String>()
 	private val main = Handler(Looper.getMainLooper())
 
-	fun key(startFen: String, uci: String) = "$startFen|$uci"
+	fun key(startFen: String, uci: String, variant: Int = 0) = "$variant|$startFen|$uci"
 	fun result(k: String) = cache[k]
 	fun progress(k: String) = progress[k]
 	fun error(k: String) = failed[k]
@@ -103,15 +103,16 @@ object Analyzer {
 	fun unlisten(k: String, l: () -> Unit) { listeners[k]?.remove(l) }
 	private fun notify(k: String) = main.post { listeners[k]?.toList()?.forEach { it() } }
 
-	fun start(ctx: Context, startFen: String, uci: String) {
-		val k = key(startFen, uci)
+	fun start(ctx: Context, startFen: String, uci: String, variant: Int = 0) {
+		val k = key(startFen, uci, variant)
+		val c960 = variant == ru.cersat.chessics.chess.V.CHESS960
 		if (cache.containsKey(k) || progress.containsKey(k)) return
 		failed.remove(k)
 		progress[k] = 0
 		val app = ctx.applicationContext
 		val e = Stockfish.analysis
 		e.exec.execute {
-			val game = GameRecord.fromUci(startFen, uci)
+			val game = GameRecord.fromUci(startFen, uci, variant)
 			val n = game.moves.size
 			val uciList = game.moves.map { M.uci(it) }
 			val evals = IntArray(n + 1)
@@ -123,7 +124,7 @@ object Analyzer {
 				if (st.outcome != Outcome.NONE) {
 					evals[i] = when (st.outcome) { Outcome.WHITE_WINS -> 10000; Outcome.BLACK_WINS -> -10000; else -> 0 }
 				} else {
-					val an = e.analyse(app, startFen, uciList.take(i).joinToString(" "), p.side == P.WHITE, "movetime 250", 2)
+					val an = e.analyse(app, startFen, uciList.take(i).joinToString(" "), p.side == P.WHITE, "movetime 250", 2, c960)
 					if (an == null || an.isEmpty()) {
 						main.post { progress.remove(k); failed[k] = e.lastError ?: "Stockfish не ответил" }
 						notify(k)

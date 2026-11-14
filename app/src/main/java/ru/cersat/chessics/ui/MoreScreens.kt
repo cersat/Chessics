@@ -38,9 +38,20 @@ class ShopScreen(a: MainActivity) : Screen(a) {
 		})
 		box.addView(fz)
 
+		// разделы сворачиваются; открыт только один
+		val open = st.str("shopOpen", Shop.Cat.THEME.name)
 		for (cat in Shop.Cat.values()) {
-			box.addView(ui.text(cat.title, 19f, bold = true))
-			for (item in Shop.items(cat)) box.addView(itemCard(item))
+			val items = Shop.items(cat)
+			val isOpen = open == cat.name
+			val owned = items.count { st.owns(it.id) }
+			val sel = Shop.byId(st.selected(cat))?.name ?: ""
+			val head = ui.row(10)
+			head.setPadding(ui.dp(16), ui.dp(14), ui.dp(16), ui.dp(14))
+			head.addView(ui.col(0, 2, ui.text(cat.title, 17f, bold = true), ui.sub("Куплено $owned из ${items.size} · выбрано: $sel", 12f)), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+			head.addView(ui.text(if (isOpen) "▴" else "▾", 22f, ui.t.sub))
+			ui.clickable(head, if (isOpen) ui.t.card2 else ui.t.card, 18f) { st.setStr("shopOpen", if (isOpen) "" else cat.name); a.refresh() }
+			box.addView(head)
+			if (isOpen) for (item in items) box.addView(itemCard(item))
 		}
 		return ui.scroll(box)
 	}
@@ -73,6 +84,13 @@ class ShopScreen(a: MainActivity) : Screen(a) {
 					c.drawBitmap(b, null, android.graphics.RectF((i % 2) * s, (i / 2) * s, (i % 2 + 1) * s, (i / 2 + 1) * s), p)
 				}
 			}
+			is Shop.Sound -> {
+				val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+				p.color = ui.t.card2; c.drawRoundRect(0f, 0f, size.toFloat(), size.toFloat(), 18f, 18f, p)
+				p.color = ui.t.accent; p.textSize = size * 0.5f
+				val sym = if (item.style == 0) "🔇" else "♪"
+				c.drawText(sym, (size - p.measureText(sym)) / 2, size * 0.68f, p)
+			}
 			is Shop.Widget -> {
 				ru.cersat.chessics.data.Widgets.background(c, size * 2f, size.toFloat(), item, size * 0.2f)
 				ru.cersat.chessics.data.Widgets.drawIcon(c, item.style, size * 0.45f, size / 2f, size * 0.26f, item.text, item.accent)
@@ -98,6 +116,7 @@ class ShopScreen(a: MainActivity) : Screen(a) {
 			is Shop.Pieces -> item.credit
 			is Shop.Widget -> "Для виджета серии и задачи дня"
 			is Shop.Theme -> if (item.light) "Светлая тема приложения" else "Тёмная тема приложения"
+			is Shop.Sound -> item.desc + if (item.style > 0) " · нажми, чтобы послушать" else ""
 			else -> "Цвета клеток и подсветки"
 		}
 		r.addView(ui.col(0, 2, ui.text(item.name, 16f, bold = true), ui.sub(desc, 12f)), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -109,6 +128,12 @@ class ShopScreen(a: MainActivity) : Screen(a) {
 			}
 		}
 		r.addView(btn)
+		if (item is Shop.Sound && item.style > 0) r.setOnClickListener {
+			val ctx = a
+			ru.cersat.chessics.data.Sounds.play(ctx, ru.cersat.chessics.data.Sounds.Kind.MOVE, item.style)
+			BotRunner.main.postDelayed({ ru.cersat.chessics.data.Sounds.play(ctx, ru.cersat.chessics.data.Sounds.Kind.CAPTURE, item.style) }, 350)
+			BotRunner.main.postDelayed({ ru.cersat.chessics.data.Sounds.play(ctx, ru.cersat.chessics.data.Sounds.Kind.CHECK, item.style) }, 750)
+		}
 		return r
 	}
 
@@ -194,7 +219,7 @@ class HistoryScreen(a: MainActivity) : Screen(a) {
 			r.setPadding(ui.dp(14), ui.dp(12), ui.dp(10), ui.dp(12))
 			val plies = o.optString("uci").split(' ').count { it.isNotBlank() }
 			val info = ui.col(0, 2,
-				ui.text("${o.optString("w")} — ${o.optString("b")}", 15f, bold = true),
+				ui.text("${o.optString("w")} — ${o.optString("b")}" + (o.optInt("variant").takeIf { it > 0 }?.let { " · ${ru.cersat.chessics.chess.V.NAMES[it]}" } ?: ""), 15f, bold = true),
 				ui.sub("${o.optString("res")} · ${o.optString("reason")} · ${(plies + 1) / 2} ход.", 12f),
 				ui.sub(o.optString("date") + if (o.optString("tc").isNotEmpty()) " · ${o.optString("tc")}" else "", 11f))
 			r.addView(info, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -202,7 +227,7 @@ class HistoryScreen(a: MainActivity) : Screen(a) {
 			ui.clickable(r, ui.t.card, 16f) {
 				val res = when (o.optString("res")) { "1-0" -> "Победа белых"; "0-1" -> "Победа чёрных"; "1/2-1/2" -> "Ничья"; else -> "" }
 				a.push(ReviewScreen(a, o.optString("fen", Position.START), o.optString("uci"), o.optString("w"), o.optString("b"),
-					if (res.isEmpty()) "" else "$res · ${o.optString("reason")}"))
+					if (res.isEmpty()) "" else "$res · ${o.optString("reason")}", o.optInt("variant")))
 			}
 			box.addView(r)
 		}
@@ -222,6 +247,7 @@ class SettingsScreen(a: MainActivity) : Screen(a) {
 		box.addView(toggle("Анимация ходов", "anim", true))
 		box.addView(toggle("Значок типа своего хода во время партии (★, ?!, ??…)", "liveJudge", true))
 		box.addView(toggle("Сразу превращать пешку в ферзя", "autoqueen", false))
+		box.addView(toggle("Предходы (ход заранее, пока думает соперник)", "premove", true))
 		box.addView(toggle("Вибрация при ходе", "vibro", true))
 		box.addView(toggle("Напоминание о серии в 20:00", "remind", true) {
 			Reminder.schedule(a)

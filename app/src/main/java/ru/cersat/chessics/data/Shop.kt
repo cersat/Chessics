@@ -5,7 +5,7 @@ import android.content.Context
 object Shop {
 	const val FREEZE_PRICE = 50
 
-	enum class Cat(val title: String) { THEME("Темы оформления"), BOARD("Доски"), PIECES("Фигуры"), WIDGET("Скины виджетов") }
+	enum class Cat(val title: String) { THEME("Темы оформления"), BOARD("Доски"), PIECES("Фигуры"), SOUND("Звуки ходов"), WIDGET("Скины виджетов") }
 
 	open class Item(val id: String, val cat: Cat, val name: String, val price: Int)
 
@@ -17,6 +17,9 @@ object Shop {
 		Item(id, Cat.BOARD, name, price)
 
 	class Pieces(id: String, name: String, price: Int, val set: String, val credit: String) : Item(id, Cat.PIECES, name, price)
+
+	// style: 0 — без звука, 1 — классика, 2 — дерево, 3 — 8 бит, 4 — стекло, 5 — мягкие, 6 — космос
+	class Sound(id: String, name: String, price: Int, val style: Int, val desc: String) : Item(id, Cat.SOUND, name, price)
 
 	class Widget(id: String, name: String, price: Int, val top: Int, val bottom: Int, val text: Int, val accent: Int, val style: Int) :
 		Item(id, Cat.WIDGET, name, price)
@@ -76,6 +79,16 @@ object Shop {
 		Pieces("pc_anarcandy", "Анаркенди", 250, "anarcandy", "anarcandy — caderek, CC BY-NC-SA 4.0")
 	)
 
+	val SOUNDS = listOf(
+		Sound("sn_off", "Без звука", 0, 0, "Тишина"),
+		Sound("sn_classic", "Классика", 0, 1, "Щелчок фигуры о доску"),
+		Sound("sn_wood", "Дерево", 40, 2, "Глухой тёплый стук"),
+		Sound("sn_soft", "Мягкие", 50, 5, "Приглушённые, для ночной игры"),
+		Sound("sn_8bit", "8 бит", 70, 3, "Как в старой приставке"),
+		Sound("sn_glass", "Стекло", 90, 4, "Звонкие колокольчики"),
+		Sound("sn_space", "Космос", 120, 6, "Свипы и бипы")
+	)
+
 	// style: 0 — пламя, 1 — снежинка, 2 — молния, 3 — корона, 4 — минимал, 5 — радуга
 	val WIDGETS = listOf(
 		Widget("wg_classic", "Классика", 0, c(0xFF262A33), c(0xFF15171C), c(0xFFFFFFFF), c(0xFFFF9F1C), 0),
@@ -92,6 +105,7 @@ object Shop {
 		Cat.THEME -> THEMES
 		Cat.BOARD -> BOARDS
 		Cat.PIECES -> PIECES.filter { it.set in installedSets }
+		Cat.SOUND -> SOUNDS
 		Cat.WIDGET -> WIDGETS
 	}
 
@@ -104,10 +118,11 @@ object Shop {
 		}.toSet()
 	}
 
-	fun byId(id: String): Item? = (THEMES + BOARDS + PIECES + WIDGETS).firstOrNull { it.id == id }
+	fun byId(id: String): Item? = (THEMES + BOARDS + PIECES + SOUNDS + WIDGETS).firstOrNull { it.id == id }
 
 	fun theme(ctx: Context) = byId(Store.get(ctx).selected(Cat.THEME)) as? Theme ?: THEMES[0]
 	fun board(ctx: Context) = byId(Store.get(ctx).selected(Cat.BOARD)) as? Board ?: BOARDS[0]
 	fun pieces(ctx: Context) = (byId(Store.get(ctx).selected(Cat.PIECES)) as? Pieces)?.takeIf { it.set in installedSets } ?: PIECES[0]
+	fun sound(ctx: Context) = byId(Store.get(ctx).selected(Cat.SOUND)) as? Sound ?: SOUNDS[1]
 	fun widget(ctx: Context) = byId(Store.get(ctx).selected(Cat.WIDGET)) as? Widget ?: WIDGETS[0]
 }

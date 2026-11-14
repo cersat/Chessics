@@ -16,6 +16,7 @@ import ru.cersat.chessics.chess.GameRecord
 import ru.cersat.chessics.chess.M
 import ru.cersat.chessics.chess.P
 import ru.cersat.chessics.chess.Position
+import ru.cersat.chessics.chess.V
 import ru.cersat.chessics.data.Lichess
 import ru.cersat.chessics.data.Shop
 import java.text.SimpleDateFormat
@@ -88,6 +89,16 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 			}
 		}
 
+		val lv = st.str("liVariant", "0").toInt().coerceIn(0, V.NAMES.size - 1)
+		val vKey = V.LICHESS[lv]
+		val vCard = ui.card()
+		vCard.addView(ui.text("Вариант", 17f, bold = true))
+		vCard.addView(ui.space(8))
+		vCard.addView(ui.chips(V.NAMES.mapIndexed { i, n -> n to (i == lv) }, 4) { st.setStr("liVariant", "$it"); a.refresh() })
+		vCard.addView(ui.space(4))
+		vCard.addView(ui.sub("Для поиска, вызова и Stockfish на lichess."))
+		box.addView(vCard)
+
 		val tc = st.str("liClock", "0").toInt().coerceIn(0, clocks.size - 1)
 		val rated = st.flag("liRated", false)
 		val seekCard = ui.card()
@@ -98,7 +109,7 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 		seekCard.addView(ui.space(8))
 		seekCard.addView(ui.chips(listOf("Товарищеская" to !rated, "Рейтинговая" to rated), 2) { st.setFlag("liRated", it == 1); a.refresh() })
 		seekCard.addView(ui.space(10))
-		seekCard.addView(ui.button("Найти соперника") { startSeek(clocks[tc], rated) })
+		seekCard.addView(ui.button("Найти соперника") { startSeek(clocks[tc], rated, vKey) })
 		seekCard.addView(ui.space(8))
 		seekCard.addView(ui.button("Блиц и пуля со случайным — на lichess.org", false) { a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Lichess.HOST))) })
 		box.addView(seekCard)
@@ -121,7 +132,7 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 			val u = name.text.toString().trim()
 			if (u.isEmpty()) return@button
 			val (m, inc) = challengeClocks[ftc]
-			challenge("/api/challenge/$u", mapOf("rated" to "$rated", "clock.limit" to "${m * 60}", "clock.increment" to "$inc", "color" to "random"), "Ждём, пока $u примет вызов…")
+			challenge("/api/challenge/$u", mapOf("rated" to "$rated", "clock.limit" to "${m * 60}", "clock.increment" to "$inc", "color" to "random", "variant" to vKey), "Ждём, пока $u примет вызов…")
 		})
 		box.addView(friend)
 
@@ -138,7 +149,7 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 			val (m, inc) = challengeClocks[aiTc]
 			Lichess.exec.execute {
 				try {
-					val o = Lichess.call(a, "POST", "/api/challenge/ai", mapOf("level" to "$lvl", "clock.limit" to "${m * 60}", "clock.increment" to "$inc", "color" to "random"))
+					val o = Lichess.call(a, "POST", "/api/challenge/ai", mapOf("level" to "$lvl", "clock.limit" to "${m * 60}", "clock.increment" to "$inc", "color" to "random", "variant" to vKey))
 					val id = o.optString("id")
 					BotRunner.main.post { if (opened.add(id)) a.push(OnlineGameScreen(a, id)) }
 				} catch (e: Exception) { BotRunner.main.post { a.toast("Lichess: ${e.message}") } }
@@ -229,13 +240,13 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 
 	private var seekDialog: android.app.AlertDialog? = null
 
-	private fun startSeek(tc: Pair<Int, Int>, rated: Boolean) {
+	private fun startSeek(tc: Pair<Int, Int>, rated: Boolean, variant: String) {
 		val h = Lichess.Stream()
 		seek = h
 		seekDialog = a.dialog("Ищу соперника", ui.sub("${tc.first}+${tc.second} · ${if (rated) "рейтинговая" else "товарищеская"}. Как только найдётся — партия откроется сама."),
 			"Отмена" to { h.close(); seek = null; seekDialog = null }, cancelable = false)
 		Lichess.exec.execute {
-			val err = Lichess.stream(a, "POST", "/api/board/seek", mapOf("rated" to "$rated", "time" to "${tc.first}", "increment" to "${tc.second}", "variant" to "standard", "color" to "random"), h) {}
+			val err = Lichess.stream(a, "POST", "/api/board/seek", mapOf("rated" to "$rated", "time" to "${tc.first}", "increment" to "${tc.second}", "variant" to variant, "color" to "random"), h) {}
 			if (err != null) BotRunner.main.post { seekDialog?.dismiss(); seekDialog = null; a.toast("Не удалось начать поиск: ${err.message}") }
 		}
 	}
@@ -267,6 +278,7 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) {
 	private val st = a.store
 	private var startFen = Position.START
+	private var variant = V.STANDARD
 	private var game = GameRecord(startFen)
 	private var my = P.WHITE
 	private var names = arrayOf("Белые", "Чёрные")
@@ -319,6 +331,7 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 		board.showLegal = st.flag("legal", true)
 		board.canMove = { c -> c == my && live() && loaded && game.pos.side == my }
 		board.onMove = { m -> onMove(m) }
+		board.premoveColor = { if (st.flag("premove", true) && live() && loaded && game.pos.side != my) my else -1 }
 		root.addView(board, ui.lp())
 		root.addView(bottomBar, ui.lp())
 		root.addView(info, ui.lp())
@@ -348,6 +361,8 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 			"gameFull" -> {
 				val fen = ev.optString("initialFen", "startpos")
 				startFen = if (fen == "startpos" || fen.isEmpty()) Position.START else fen
+				variant = V.fromLichess(ev.optJSONObject("variant")?.optString("key") ?: "standard")
+				game = GameRecord(startFen, variant)
 				val w = ev.optJSONObject("white"); val b = ev.optJSONObject("black")
 				names = arrayOf(pname(w), pname(b))
 				ratings = arrayOf(w?.optInt("rating")?.takeIf { it > 0 }?.toString() ?: "", b?.optInt("rating")?.takeIf { it > 0 }?.toString() ?: "")
@@ -379,10 +394,23 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 		drawBy = when { s.optBoolean("wdraw") -> P.WHITE; s.optBoolean("bdraw") -> P.BLACK; else -> -1 }
 		val moves = s.optString("moves", "").trim()
 		val animate = moves.length > serverMoves.length
+		val before = game.moves.size
 		serverMoves = moves
 		syncMoves(moves)
 		redraw(animate)
-		if (!live() && !finished) finish()
+		if (game.moves.size > before && game.moves.isNotEmpty()) {
+			val n = game.moves.size
+			val last = game.moves[n - 1]
+			val prev = game.positionAt(n - 1)
+			// свой ход уже озвучен при отправке
+			if (prev.side != my) ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.forMove(prev.capturedBy(last) != 0, M.isCastle(last), game.pos.inCheck()))
+		}
+		if (!live() && !finished) { board.clearPremove(); ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.Kind.END); finish() }
+		else if (game.pos.side == my && board.premoveFrom >= 0) {
+			val f = board.premoveFrom; val t = board.premoveTo
+			board.clearPremove()
+			game.pos.legalMoves().firstOrNull { M.from(it) == f && M.to(it) == t && (M.promo(it) == 0 || M.promo(it) == P.QUEEN) }?.let { send(it) }
+		}
 	}
 
 	private fun syncMoves(moves: String) {
@@ -391,7 +419,7 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 		if (list.size >= mine.size && list.subList(0, mine.size) == mine) {
 			for (u in list.drop(mine.size)) { val m = game.pos.parseUci(u); if (m == 0) break; game.play(m) }
 		} else {
-			game = GameRecord.fromUci(startFen, moves)
+			game = GameRecord.fromUci(startFen, moves, variant)
 		}
 	}
 
@@ -487,7 +515,9 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 	private fun send(m: Int) {
 		if (m == 0) return
 		val u = M.uci(m)
+		val captured = game.pos.capturedBy(m) != 0
 		game.play(m) // сразу показываем, сервер подтвердит
+		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.forMove(captured, M.isCastle(m), game.pos.inCheck()))
 		if (game.moves.size >= 2) { times[my] = timeOf(my); stateAt = System.currentTimeMillis() }
 		redraw(true)
 		Lichess.exec.execute {
@@ -495,7 +525,7 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 			catch (e: Exception) {
 				BotRunner.main.post {
 					a.toast("Ход не принят: ${e.message}")
-					game = GameRecord.fromUci(startFen, serverMoves)
+					game = GameRecord.fromUci(startFen, serverMoves, variant)
 					redraw(false)
 				}
 			}
@@ -513,9 +543,9 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 			.put("w", names[0]).put("b", names[1])
 			.put("res", when (winner) { "white" -> "1-0"; "black" -> "0-1"; else -> "1/2-1/2" })
 			.put("reason", resultText().substringAfter("· ", resultText()))
-			.put("fen", startFen).put("uci", game.uciList()).put("tc", "lichess")
+			.put("fen", startFen).put("uci", game.uciList()).put("tc", "lichess").put("variant", variant)
 		st.saveGame(o)
-		if (plies > 0) Analyzer.start(a, startFen, game.uciList())
+		if (plies > 0 && (variant == V.STANDARD || variant == V.CHESS960)) Analyzer.start(a, startFen, game.uciList(), variant)
 		val body = ui.col(0, 6)
 		r.lines.forEach { body.addView(ui.text(it, 14f)) }
 		if (r.diamonds > 0) body.addView(ui.text("Всего: +${r.diamonds} 💎", 16f, ui.t.accent, true))
@@ -525,7 +555,7 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 
 	private fun openReview() {
 		val res = resultText()
-		a.push(ReviewScreen(a, startFen, game.uciList(), names[0], names[1], res))
+		a.push(ReviewScreen(a, startFen, game.uciList(), names[0], names[1], res, variant))
 	}
 
 	override fun dispose() {

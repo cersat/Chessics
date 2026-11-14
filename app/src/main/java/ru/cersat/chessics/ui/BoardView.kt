@@ -70,6 +70,14 @@ class BoardView(ctx: Context) : View(ctx) {
 	var hintMove = 0
 	var canMove: (Int) -> Boolean = { false } // может ли человек ходить за этот цвет
 	var onMove: (Int) -> Unit = {}
+	// предходы: цвет, за который можно заранее назначить ход, пока ходит соперник (−1 — нельзя)
+	var premoveColor: () -> Int = { -1 }
+	var premoveFrom = -1
+	var premoveTo = -1
+	var onPremove: () -> Unit = {}
+	private var preSelect = -1
+
+	fun clearPremove() { premoveFrom = -1; premoveTo = -1; preSelect = -1; invalidate() }
 	var markSquare = -1 // красная/зелёная подсветка (задачи)
 	var markColor = 0
 	// значок типа хода (!!, !, ★, ?! …) в углу клетки
@@ -171,6 +179,7 @@ class BoardView(ctx: Context) : View(ctx) {
 				paint.color = board.last; c.drawRect(x, y, x + s, y + s, paint)
 			}
 			if (sq == selected) { paint.color = board.select; c.drawRect(x, y, x + s, y + s, paint) }
+			if (sq == premoveFrom || sq == premoveTo || sq == preSelect) { paint.color = 0x99D9534F.toInt(); c.drawRect(x, y, x + s, y + s, paint) }
 			if (sq == markSquare) { paint.color = markColor; c.drawRect(x, y, x + s, y + s, paint) }
 			if (sq == badgeSq && badgeClass != null) { paint.color = (badgeClass!!.color and 0x00FFFFFF) or 0x66000000; c.drawRect(x, y, x + s, y + s, paint) }
 		}
@@ -403,6 +412,17 @@ class BoardView(ctx: Context) : View(ctx) {
 		when (e.actionMasked) {
 			MotionEvent.ACTION_DOWN -> {
 				downX = e.x; downY = e.y
+				val pc0 = if (sq >= 0) pos.sq[sq] else 0
+				val pre = premoveColor()
+				if (pre >= 0 && pos.side != pre) {
+					// назначение предхода: своя фигура → клетка
+					if (preSelect >= 0 && sq >= 0 && sq != preSelect && (pc0 == 0 || P.color(pc0) != pre)) {
+						premoveFrom = preSelect; premoveTo = sq; preSelect = -1; invalidate(); onPremove(); return true
+					}
+					if (pc0 != 0 && P.color(pc0) == pre) { premoveFrom = -1; premoveTo = -1; preSelect = sq; invalidate(); return true }
+					clearPremove()
+					return true
+				}
 				val pc = if (sq >= 0) pos.sq[sq] else 0
 				if (selected >= 0 && sq >= 0 && (pc == 0 || P.color(pc) != pos.side) && tryMove(selected, sq)) return true
 				if (pc != 0 && P.color(pc) == pos.side && canMove(pos.side)) {

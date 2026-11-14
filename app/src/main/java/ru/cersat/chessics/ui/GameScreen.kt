@@ -50,9 +50,14 @@ object BotRunner {
 	}
 }
 
-class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject?) : Screen(a) {
+class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject?,
+	private val link: ru.cersat.chessics.data.Link? = null, private val remoteName: String = "") : Screen(a) {
+	private val endgame = ru.cersat.chessics.data.Endgames.byId(cfg.training)
+	private var linkLost = false
+	private var openingName = ""
 	private val st = a.store
-	private val game = GameRecord(cfg.startFen)
+	private val game = GameRecord(cfg.startFen, cfg.variant)
+	private val c960 = cfg.variant == ru.cersat.chessics.chess.V.CHESS960
 	private val times = LongArray(2) { cfg.minutes * 60_000L }
 	private var takebacks = 0
 	private var hints = 0
@@ -89,6 +94,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 				if (times[side] <= 0) {
 					times[side] = 0
 					val opp = side xor 1
+					if (cfg.remote && side == cfg.humanColor) sendRemote(JSONObject().put("t", "flag"))
 					finish(if (game.pos.canMate(opp)) GameResult(if (opp == P.WHITE) Outcome.WHITE_WINS else Outcome.BLACK_WINS, "время вышло")
 					else GameResult(Outcome.DRAW, "время вышло, но у соперника не хватает материала для мата"))
 				}
@@ -118,9 +124,46 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		}
 		if (cfg.hvh && !cfg.faceToFace) whiteBottom = game.pos.side == P.WHITE
 		Stockfish.play.newGame()
+		link?.onClosed = {
+			if (result == null) { linkLost = true; a.toast("Соединение с соперником потеряно"); updateStatus() }
+		}
+		link?.attach { onRemote(it) }
 	}
 
-	private fun clockRunning() = cfg.hasClock && result == null && game.moves.isNotEmpty() && !paused
+	// ---------- сетевой соперник ----------
+
+	private val remoteColor get() = if (cfg.white.kind == Player.Kind.REMOTE) P.WHITE else P.BLACK
+
+	private fun onRemote(o: JSONObject) {
+		when (o.optString("t")) {
+			"move" -> {
+				if (result != null || o.optInt("ply") != game.moves.size || playerOf(game.pos.side).kind != Player.Kind.REMOTE) return
+				val m = game.pos.parseUci(o.optString("uci"))
+				if (m == 0) return
+				if (o.has("time") && cfg.hasClock) times[remoteColor] = o.optLong("time")
+				applyMove(m)
+			}
+			"resign" -> finish(GameResult(if (remoteColor == P.WHITE) Outcome.BLACK_WINS else Outcome.WHITE_WINS, "соперник сдался"))
+			"draw" -> { drawOfferBy = remoteColor; refreshAll(false); a.toast("Соперник предлагает ничью") }
+			"drawYes" -> finish(GameResult(Outcome.DRAW, "ничья по соглашению"))
+			"drawNo" -> { drawOfferBy = -1; a.toast("Соперник отклонил ничью"); refreshAll(false) }
+			"flag" -> finish(GameResult(if (remoteColor == P.WHITE) Outcome.BLACK_WINS else Outcome.WHITE_WINS, "у соперника вышло время"))
+		}
+	}
+
+	private fun sendRemote(o: JSONObject) { link?.send(o) }
+
+	// для «ещё одной» партии в Chess960 — новая случайная расстановка
+	private fun freshConfig() = if (c960) cfg.copy(startFen = ru.cersat.chessics.chess.V.random960()) else cfg
+
+	private lateinit var openingView: TextView
+
+	private fun nameOf(c: Int): String {
+		val p = playerOf(c)
+		return if (p.kind == Player.Kind.REMOTE) remoteName.ifEmpty { "Соперник" } else p.shortName
+	}
+
+	private fun clockRunning() = cfg.hasClock && result == null && game.moves.isNotEmpty() && !paused && !linkLost
 
 	private fun playerOf(color: Int) = if (color == P.WHITE) cfg.white else cfg.black
 	private fun humanTurn() = result == null && viewPly < 0 && playerOf(game.pos.side).isHuman
@@ -140,11 +183,19 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		board.showLegal = st.flag("legal", true)
 		board.canMove = { c -> humanTurn() && playerOf(c).isHuman }
 		board.onMove = { m -> onHumanMove(m) }
+		board.premoveColor = {
+			val hc = cfg.humanColor
+			if (st.flag("premove", true) && result == null && viewPly < 0 && hc >= 0 && !playerOf(game.pos.side).isHuman) hc else -1
+		}
 
 		val header = ui.row(8)
 		header.addView(ui.button("‹", false) { a.goBack() })
-		header.addView(ui.text("${cfg.white.shortName} — ${cfg.black.shortName}" + if (cfg.hasClock) " · ${GameConfig.clockLabel(cfg.minutes, cfg.inc)}" else "",
-			14f, ui.t.sub), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		val titleText = endgame?.let { "🎓 ${it.title} · ${if (it.win) "выиграй" else "удержи ничью"}" }
+			?: ("${nameOf(P.WHITE)} — ${nameOf(P.BLACK)}" + if (cfg.hasClock) " · ${GameConfig.clockLabel(cfg.minutes, cfg.inc)}" else "")
+		val titleBox = ui.col(0, 0, ui.text(titleText, 14f, ui.t.sub))
+		openingView = ui.text("", 12f, ui.t.accent)
+		titleBox.addView(openingView)
+		header.addView(titleBox, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		root.addView(header)
 		root.addView(topBar, ui.lp())
 		root.addView(board, ui.lp())
@@ -155,6 +206,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		root.addView(controls, ui.lp())
 
 		refreshAll(false)
+		updateOpening()
 		lastTick = System.currentTimeMillis()
 		BotRunner.main.removeCallbacks(tick)
 		BotRunner.main.post(tick)
@@ -197,7 +249,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			var mate = 0
 			if (st0.outcome != Outcome.NONE) score = when (st0.outcome) { Outcome.WHITE_WINS -> 10000; Outcome.BLACK_WINS -> -10000; else -> 0 }
 			else {
-				val l = e.analyse(a, cfg.startFen, uci, p.side == P.WHITE, "depth 3")?.firstOrNull()
+				val l = if (!cfg.stockfishOk) null else e.analyse(a, cfg.startFen, uci, p.side == P.WHITE, "depth 3", 1, c960)?.firstOrNull()
 				score = l?.score ?: Eval.evaluate(p).coerceIn(-9000, 9000)
 				mate = l?.mate ?: 0
 			}
@@ -237,7 +289,11 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		val icon = ImageView(a)
 		icon.setImageBitmap(PieceArt.get(a, Shop.pieces(a).set, P.make(color, P.KING)))
 		bar.addView(icon, LinearLayout.LayoutParams(ui.dp(26), ui.dp(26)))
-		val name = if (pl.isHuman) (if (cfg.hvh) (if (color == P.WHITE) "Белые" else "Чёрные") else "Ты · ${st.rating}") else "${pl.shortName} · ≈${pl.elo}"
+		val name = when {
+			pl.kind == Player.Kind.REMOTE -> nameOf(color)
+			pl.isHuman -> if (cfg.hvh) (if (color == P.WHITE) "Белые" else "Чёрные") else if (cfg.remote) "Ты" else "Ты · ${st.rating}"
+			else -> "${pl.shortName} · ≈${pl.elo}"
+		}
 		val diff = materialDiff(color)
 		val info = ui.col(0, 0, ui.text(name, 15f, bold = true), ui.sub(if (diff > 0) "+$diff по материалу" else " ", 11f))
 		bar.addView(info, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -270,14 +326,23 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 
 	private fun updateStatus() {
 		val r = result
-		status.text = when {
+		val v = cfg.variant
+		val extra = when (v) {
+			ru.cersat.chessics.chess.V.THREE_CHECK -> " · шахи: белые ${game.pos.checks[0]}/3, чёрные ${game.pos.checks[1]}/3"
+			ru.cersat.chessics.chess.V.KOTH -> " · цель: король в центр"
+			ru.cersat.chessics.chess.V.CHESS960 -> " · Chess960"
+			else -> ""
+		}
+		status.text = (when {
 			r != null -> resultText(r)
 			viewPly >= 0 -> "Просмотр: ход ${viewPly} из ${game.moves.size}"
 			paused -> "Пауза"
+			linkLost -> "Соединение потеряно"
 			thinking -> "${playerOf(game.pos.side).shortName} думает…"
+			playerOf(game.pos.side).kind == Player.Kind.REMOTE -> "Ход соперника" + if (board.premoveFrom >= 0) " · предход назначен" else ""
 			game.pos.inCheck() -> "Шах! Ход ${if (game.pos.side == P.WHITE) "белых" else "чёрных"}"
 			else -> "Ход ${if (game.pos.side == P.WHITE) "белых" else "чёрных"}"
-		}
+		}) + (if (r == null) extra else "")
 	}
 
 	private fun resultText(r: GameResult) = when (r.outcome) {
@@ -290,7 +355,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 	private fun buildMoves() {
 		movesRow.removeAllViews()
 		val startWhite = game.startSide() == P.WHITE
-		var num = ru.cersat.chessics.chess.Position().also { it.setFen(cfg.startFen) }.full
+		var num = ru.cersat.chessics.chess.Position.of(cfg.startFen, cfg.variant).full
 		val cur = if (viewPly < 0) game.moves.size else viewPly
 		var whiteTurn = startWhite
 		for (i in game.sanRu.indices) {
@@ -318,7 +383,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		add("▶", viewPly >= 0) { viewPly = if (cur + 1 >= n) -1 else cur + 1; refreshAll(viewPly < 0) }
 		if (over) {
 			add("Анализ", primary = true) { openReview() }
-			add("Ещё", primary = false) { a.replace(GameScreen(a, cfg, null)) }
+			if (!cfg.remote) add("Ещё", primary = false) { a.replace(GameScreen(a, freshConfig(), null)) }
 			return
 		}
 		add("⇅") { whiteBottom = !whiteBottom; refreshAll(false) }
@@ -331,10 +396,18 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			}
 			return
 		}
+		if (cfg.remote) {
+			if (drawOfferBy == remoteColor) {
+				add("Принять ½", primary = true) { sendRemote(JSONObject().put("t", "drawYes")); finish(GameResult(Outcome.DRAW, "ничья по соглашению")) }
+				add("✕") { sendRemote(JSONObject().put("t", "drawNo")); drawOfferBy = -1; refreshAll(false) }
+			} else add("½", drawOfferBy < 0 && !linkLost) { drawOfferBy = cfg.humanColor; sendRemote(JSONObject().put("t", "draw")); a.toast("Ничья предложена"); refreshAll(false) }
+			add("⚑") { resign(cfg.humanColor) }
+			return
+		}
 		add("↩", n > 0 && viewPly < 0) { takeback() }
 		if (cfg.bot != null) {
 			add("💡${HINT}", viewPly < 0 && humanTurn()) { hint() }
-			add("½") { offerDrawToBot() }
+			if (endgame == null) add("½") { offerDrawToBot() }
 			add("⚑") { resign(cfg.humanColor) }
 		}
 	}
@@ -375,15 +448,41 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		val before = game.pos.copy()
 		val uciBefore = game.uciList()
 		val humanMove = playerOf(mover).isHuman
+		val captured = before.capturedBy(m) != 0
 		game.play(m)
 		if (humanMove) afterHumanMove(before, uciBefore, m, game.moves.size)
 		if (cfg.hasClock && game.moves.size > 1) times[mover] += cfg.inc * 1000L
+		if (humanMove && cfg.remote) sendRemote(JSONObject().put("t", "move").put("uci", M.uci(m)).put("ply", game.moves.size - 1).put("time", times[mover]))
+		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.forMove(captured, M.isCastle(m), game.pos.inCheck()))
+		updateOpening()
 		if (drawOfferBy == (mover xor 1)) drawOfferBy = -1
 		if (st.flag("vibro", true)) vibrate()
 		if (cfg.hvh && !cfg.faceToFace) whiteBottom = game.pos.side == P.WHITE
-		val r = Rules.status(game.pos)
+		var r = Rules.status(game.pos)
+		// тренажёр «удержи ничью»: 40 своих ходов без поражения — успех
+		if (r.outcome == Outcome.NONE && endgame != null && !endgame.win && humanMove && game.moves.size >= 80)
+			r = GameResult(Outcome.DRAW, "продержался 40 ходов")
 		refreshAll(true)
-		if (r.outcome != Outcome.NONE) finish(r) else { save(); maybeBot() }
+		if (r.outcome != Outcome.NONE) finish(r) else {
+			save(); maybeBot()
+			if (!humanMove) tryPremove()
+		}
+	}
+
+	private fun tryPremove() {
+		val f = board.premoveFrom; val t = board.premoveTo
+		board.clearPremove()
+		if (f < 0 || t < 0 || !humanTurn()) return
+		val cands = game.pos.legalMoves().filter { M.from(it) == f && M.to(it) == t }
+		val m = cands.firstOrNull { M.promo(it) == 0 || M.promo(it) == P.QUEEN } ?: return
+		BotRunner.main.postDelayed({ if (humanTurn() && game.pos.legalMoves().contains(m)) applyMove(m) }, 60)
+	}
+
+	private fun updateOpening() {
+		if (cfg.variant != ru.cersat.chessics.chess.V.STANDARD || !::openingView.isInitialized) return
+		val o = ru.cersat.chessics.data.Openings.detect(a, cfg.startFen, game.moves)
+		if (o != null) openingName = "📖 ${o.eco} ${o.name}"
+		openingView.text = openingName
 	}
 
 	private fun afterHumanMove(before: ru.cersat.chessics.chess.Position, uciBefore: String, m: Int, ply: Int) {
@@ -395,7 +494,8 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			a.toast(name + r.lines.joinToString("") { "\n$it" })
 		}
 		// оценка хода Stockfish (в потоке анализа)
-		Judge.judgeLive(a, cfg.startFen, uciBefore, before, m) { cls ->
+		if (!cfg.stockfishOk) return
+		Judge.judgeLive(a, cfg.startFen, uciBefore, before, m, c960) { cls ->
 			if (cls == null || ply > game.moves.size || game.moves[ply - 1] != m) return@judgeLive
 			liveClasses[ply] = cls
 			val showing = viewPly < 0 && game.moves.size == ply || viewPly == ply
@@ -422,7 +522,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 	private fun maybeBot() {
 		if (result != null || paused || thinking) return
 		val pl = playerOf(game.pos.side)
-		if (pl.isHuman) return
+		if (pl.isHuman || pl.kind == Player.Kind.REMOTE) return
 		thinking = true
 		updateStatus()
 		val my = token.incrementAndGet()
@@ -438,7 +538,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			if (pl.kind == Player.Kind.STOCKFISH) {
 				var mt = if (pl.level <= 0) 1500 else 700
 				if (cfg.hasClock) mt = minOf(mt, maxOf(80, (myTime / 40).toInt()))
-				val best = Stockfish.play.bestMove(a, startFen, uci, pl.level, mt)
+				val best = Stockfish.play.bestMove(a, startFen, uci, pl.level, mt, c960)
 				if (best != null) mv = pos.parseUci(best)
 				if (mv == 0) { err = "Stockfish недоступен: ${Stockfish.play.lastError ?: "нет ответа"}. Ход сделал Материал."; mv = MaterialBot(4).pick(pos, plies) { token.get() != my } }
 			} else {
@@ -478,7 +578,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		val startFen = cfg.startFen; val uci = game.uciList(); val pos = game.pos.copy()
 		val ply = game.moves.size
 		BotRunner.exec.execute {
-			var m = Stockfish.play.analyse(a, startFen, uci, pos.side == P.WHITE, "movetime 800")?.firstOrNull()?.move?.let { pos.parseUci(it) } ?: 0
+			var m = if (!cfg.stockfishOk) 0 else Stockfish.play.analyse(a, startFen, uci, pos.side == P.WHITE, "movetime 800", 1, c960)?.firstOrNull()?.move?.let { pos.parseUci(it) } ?: 0
 			if (m == 0) m = MaterialBot(5).pick(pos, ply) { false }
 			BotRunner.main.post {
 				if (game.moves.size != ply || result != null) return@post
@@ -498,7 +598,10 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 
 	private fun resign(color: Int) {
 		a.dialog("Сдаться?", ui.sub("${if (color == P.WHITE) "Белые" else "Чёрные"} признают поражение."),
-			"Сдаться" to { finish(GameResult(if (color == P.WHITE) Outcome.BLACK_WINS else Outcome.WHITE_WINS, "${if (color == P.WHITE) "белые" else "чёрные"} сдались")) },
+			"Сдаться" to {
+				if (cfg.remote) sendRemote(JSONObject().put("t", "resign"))
+				finish(GameResult(if (color == P.WHITE) Outcome.BLACK_WINS else Outcome.WHITE_WINS, "${if (color == P.WHITE) "белые" else "чёрные"} сдались"))
+			},
 			"Играть дальше" to {})
 	}
 
@@ -510,9 +613,11 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		token.incrementAndGet(); Stockfish.play.stop(); thinking = false
 		viewPly = -1
 		st.setStr("current", "")
+		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.Kind.END)
+		board.clearPremove()
 		val reward = giveRewards(r)
 		saveHistory(r)
-		if (game.moves.isNotEmpty()) Analyzer.start(a, cfg.startFen, game.uciList())
+		if (game.moves.isNotEmpty() && cfg.stockfishOk) Analyzer.start(a, cfg.startFen, game.uciList(), cfg.variant)
 		refreshAll(false)
 		showEnd(r, reward)
 	}
@@ -522,7 +627,6 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		rewarded = true
 		val plies = game.moves.size
 		if (cfg.hvh) return st.gameFinished(null, 0.5, plies, 0, true, false, cfg.hasClock)
-		val bot = cfg.bot ?: return null
 		val hc = cfg.humanColor
 		val score = when (r.outcome) {
 			Outcome.DRAW -> 0.5
@@ -530,6 +634,9 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			Outcome.BLACK_WINS -> if (hc == P.BLACK) 1.0 else 0.0
 			Outcome.NONE -> 0.0
 		}
+		if (cfg.remote) return st.lanFinished(score, plies)
+		if (endgame != null) return st.endgameFinished(endgame.id, if (endgame.win) score >= 1.0 else score >= 0.5, endgame.reward)
+		val bot = cfg.bot ?: return null
 		return st.gameFinished(bot, score, plies, takebacks, false, score >= 1.0 && r.reason == "мат", cfg.hasClock)
 	}
 
@@ -547,15 +654,25 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		body.addView(ui.sub(r.reason.replaceFirstChar { it.uppercase() }, 15f))
 		reward?.lines?.forEach { body.addView(ui.text(it, 14f)) }
 		if (reward != null && reward.diamonds > 0) body.addView(ui.text("Всего: +${reward.diamonds} 💎", 16f, ui.t.accent, true))
+		if (endgame != null) {
+			val ok = if (endgame.win) r.outcome != Outcome.DRAW && (r.outcome == Outcome.WHITE_WINS) == (hc == P.WHITE) else r.outcome == Outcome.DRAW || (r.outcome == Outcome.WHITE_WINS) == (hc == P.WHITE)
+			a.dialog(if (ok) "Пройдено! 🎓" else "Не вышло", body,
+				"Посмотреть ходы" to {}, "Ещё раз" to { a.replace(GameScreen(a, cfg, null)) }, "К тренажёру" to { a.pop() })
+			return
+		}
+		if (cfg.remote) {
+			a.dialog(head, body, "Посмотреть ходы" to {}, "Анализ партии" to { openReview() }, "В меню" to { a.showTab(0) })
+			return
+		}
 		a.dialog(head, body,
 			"Посмотреть ходы" to {},
 			"Анализ партии" to { openReview() },
-			"Новая партия" to { a.replace(GameScreen(a, cfg, null)) },
+			"Новая партия" to { a.replace(GameScreen(a, freshConfig(), null)) },
 			"В меню" to { a.showTab(0) })
 	}
 
 	private fun openReview() {
-		a.push(ReviewScreen(a, cfg.startFen, game.uciList(), cfg.white.shortName, cfg.black.shortName,
+		a.push(ReviewScreen(a, cfg.startFen, game.uciList(), cfg.white.shortName, cfg.black.shortName, variant = cfg.variant, resultLine =
 			result?.let { resultText(it) } ?: ""))
 	}
 
@@ -563,15 +680,16 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		if (game.moves.isEmpty()) return
 		val o = JSONObject()
 			.put("date", SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date()))
-			.put("w", cfg.white.shortName).put("b", cfg.black.shortName)
+			.put("w", nameOf(P.WHITE)).put("b", nameOf(P.BLACK))
 			.put("res", r.pgnTag).put("reason", r.reason)
 			.put("fen", cfg.startFen).put("uci", game.uciList())
 			.put("tc", if (cfg.hasClock) GameConfig.clockLabel(cfg.minutes, cfg.inc) else "")
+			.put("variant", cfg.variant)
 		st.saveGame(o)
 	}
 
 	private fun save() {
-		if (result != null) return
+		if (result != null || cfg.remote) return
 		if (game.moves.isEmpty()) { st.setStr("current", ""); return }
 		val o = JSONObject().put("cfg", cfg.toJson()).put("uci", game.uciList()).put("wt", times[0]).put("bt", times[1])
 			.put("tb", takebacks).put("hints", hints).put("wb", whiteBottom)
@@ -589,6 +707,8 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 
 	override fun dispose() {
 		save()
+		if (cfg.remote && result == null) sendRemote(JSONObject().put("t", "resign"))
+		link?.close()
 		barToken.incrementAndGet()
 		token.incrementAndGet()
 		Stockfish.play.stop()

@@ -25,6 +25,27 @@ class PuzzlesScreen(a: MainActivity) : Screen(a) {
 		box.addView(ui.title("Задачи"))
 		val all = Puzzles.all(a)
 		box.addView(ui.sub("Решено: ${st.stat("puzzles")} из ${all.size}. С первой попытки: ${st.stat("puzzlesClean")}."))
+		val rc = ui.card()
+		rc.addView(ui.row(10, ui.col(0, 2, ui.text("Рейтинг ${st.puzzleRating}", 20f, ui.t.accent, true),
+			ui.sub("Меняется после первой попытки каждой задачи с рейтингом", 12f)).apply { layoutParams = ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }))
+		rc.addView(ui.space(10))
+		val rr = ui.row(8)
+		rr.addView(ui.button("🎯 Задача по рейтингу") { suitable()?.let { a.push(PuzzleScreen(a, it, false)) } ?: a.toast("Все задачи решены!") }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		rr.addView(ui.button("⚡ Штурм", false) { a.push(StormScreen(a)) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		rc.addView(rr)
+		rc.addView(ui.space(6))
+		rc.addView(ui.sub("Штурм: 3 минуты, задачи всё сложнее, ошибка — минус 10 секунд. Рекорд: ${st.stormBest}", 12f))
+		box.addView(rc)
+		val due = st.repeatIds().mapNotNull { Puzzles.byId(a, it) }
+		val total = st.repeatCount()
+		if (total > 0) {
+			val c = ui.card()
+			c.addView(ui.text("🔁 Повторение ошибок", 17f, bold = true))
+			c.addView(ui.sub(if (due.isNotEmpty()) "На сегодня: ${due.size}. Всего в очереди: $total. Задачи возвращаются через 1, 3, 7 и 14 дней, пока не решишь чисто."
+				else "На сегодня всё повторено. В очереди: $total"))
+			if (due.isNotEmpty()) { c.addView(ui.space(10)); c.addView(ui.button("Повторить (${due.size})") { a.push(PuzzleScreen(a, due.first(), false)) }) }
+			box.addView(c)
+		}
 		Puzzles.daily(a)?.let { pz ->
 			val solved = st.dailySolvedToday
 			box.addView(ui.button(if (solved) "🗓 Задача дня — решена ✓" else "🗓 Задача дня · ${pz.goal} · +5 💎", !solved) { a.push(PuzzleScreen(a, pz, true)) })
@@ -37,6 +58,14 @@ class PuzzlesScreen(a: MainActivity) : Screen(a) {
 			if (list.isNotEmpty()) box.addView(themeCard(th.title, list, th.id))
 		}
 		return ui.scroll(box)
+	}
+
+	// нерешённая задача ближе всего к рейтингу (случайная из 8 ближайших)
+	private fun suitable(): Puzzles.Puzzle? {
+		val r = st.puzzleRating
+		val pool = Puzzles.all(a).filter { it.rating > 0 && !st.isSolved(it.id) && !st.wasRated(it.id) }
+		if (pool.isEmpty()) return Puzzles.all(a).firstOrNull { !st.isSolved(it.id) }
+		return pool.sortedBy { kotlin.math.abs(it.rating - r) }.take(8).random()
 	}
 
 	private fun generatorCard(): View {
@@ -151,14 +180,15 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 			controls.addView(ui.button("💡 Подсказка", false, !busy) { showHint() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 			controls.addView(ui.button("Заново", false, !busy) { restart() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		} else {
-			val next = Puzzles.all(a).firstOrNull { !st.isSolved(it.id) && it.id != pz.id && it.generated == pz.generated && it.themes.firstOrNull() == pz.themes.firstOrNull() }
+			val nextRepeat = st.repeatIds().filter { it != pz.id }.mapNotNull { Puzzles.byId(a, it) }.firstOrNull()
+			val next = nextRepeat ?: Puzzles.all(a).firstOrNull { !st.isSolved(it.id) && it.id != pz.id && it.generated == pz.generated && it.themes.firstOrNull() == pz.themes.firstOrNull() }
 			if (next != null) controls.addView(ui.button("Следующая") { a.replace(PuzzleScreen(a, next, false)) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 			controls.addView(ui.button("К задачам", next == null) { a.pop() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		}
 	}
 
 	private fun showHint() {
-		clean = false
+		failOnce()
 		if (!offLine) {
 			board.hintMove = pos.parseUci(pz.moves[step]); board.invalidate()
 			update("Подсказка показана — награда будет 1 💎")
@@ -258,7 +288,7 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 	}
 
 	private fun reject(m: Int) {
-		clean = false
+		failOnce()
 		board.markSquare = M.to(m); board.markColor = 0x88FF3B30.toInt()
 		board.setPosition(pos.copy(), m, true)
 		busy = true
@@ -272,9 +302,24 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 		}, 700)
 	}
 
+	// первая ошибка или подсказка: минус рейтинг (если задача ещё не оценивалась) и в очередь повторения
+	private fun failOnce() {
+		if (!clean) return
+		clean = false
+		val d = st.puzzleRated(pz.id, pz.rating, false)
+		if (d != 0) ratingDelta = d
+		st.updateRepeat(pz.id, false)
+		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.Kind.BAD)
+	}
+
+	private var ratingDelta = 0
+
 	private fun solvedNow() {
 		solved = true
+		if (clean) { val d = st.puzzleRated(pz.id, pz.rating, true); if (d != 0) ratingDelta = d }
+		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.Kind.GOOD)
 		val r = st.puzzleSolved(pz.id, pz.reward, clean, daily && Puzzles.daily(a)?.id == pz.id)
+		if (ratingDelta != 0) r.lines.add(0, "Рейтинг в задачах: ${st.puzzleRating} (${if (ratingDelta > 0) "+" else ""}$ratingDelta)")
 		update(null)
 		val body = ui.col(0, 6)
 		r.lines.forEach { body.addView(ui.text(it, 14f)) }
@@ -285,10 +330,11 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 
 // Разбор партии: считается в отдельном процессе Stockfish и своём потоке, можно уйти с экрана и вернуться
 class ReviewScreen(a: MainActivity, private val startFen: String, private val uci: String,
-	private val wName: String, private val bName: String, private val resultLine: String) : Screen(a) {
+	private val wName: String, private val bName: String, private val resultLine: String, private val variant: Int = 0) : Screen(a) {
 
-	private val game = GameRecord.fromUci(startFen, uci)
-	private val key = Analyzer.key(startFen, uci)
+	private val game = GameRecord.fromUci(startFen, uci, variant)
+	private val key = Analyzer.key(startFen, uci, variant)
+	private val sfOk = variant == ru.cersat.chessics.chess.V.STANDARD || variant == ru.cersat.chessics.chess.V.CHESS960
 	private var ply = 0
 	private val board = BoardView(a)
 	private val graph = EvalGraph(a)
@@ -318,7 +364,7 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 		box.addView(list, ui.lp())
 		Analyzer.unlisten(key, listener)
 		Analyzer.listen(key, listener)
-		Analyzer.start(a, startFen, uci)
+		if (sfOk) Analyzer.start(a, startFen, uci, variant)
 		show(false)
 		return ui.scroll(box)
 	}
@@ -342,7 +388,8 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 		board.setPosition(p, last)
 		if (r == null) {
 			val err = Analyzer.error(key)
-			info.text = err?.let { "Анализ недоступен: $it" } ?: "Stockfish анализирует в фоне… ${Analyzer.progress(key) ?: 0} / ${game.moves.size + 1}"
+			info.text = if (!sfOk) "Stockfish не знает правил варианта «${ru.cersat.chessics.chess.V.NAMES[variant]}», поэтому разбора нет — можно только пролистать ходы."
+				else err?.let { "Анализ недоступен: $it" } ?: "Stockfish анализирует в фоне… ${Analyzer.progress(key) ?: 0} / ${game.moves.size + 1}"
 			graph.values = emptyList()
 			if (list.childCount == 0) buildList(null)
 			return
@@ -397,7 +444,7 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 			}
 		}
 		// ходы: цвет и значок типа
-		val pos0 = Position().also { it.setFen(startFen) }
+		val pos0 = Position.of(startFen, variant)
 		var num = pos0.full
 		var white = pos0.side == P.WHITE
 		var row: LinearLayout? = null
@@ -422,4 +469,153 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 	}
 
 	override fun dispose() { Analyzer.unlisten(key, listener) }
+}
+
+// Штурм: 3 минуты, задачи всё сложнее, ошибка — минус 10 секунд и следующая задача, серия из 5 — плюс 3 секунды
+class StormScreen(a: MainActivity) : Screen(a) {
+	private val st = a.store
+	private val pool = Puzzles.all(a).filter { !it.generated && it.rating > 0 }.sortedBy { it.rating }
+	private val used = HashSet<String>()
+	private var running = false
+	private var over = false
+	private var endAt = 0L
+	private var penalty = 0L
+	private var score = 0
+	private var combo = 0
+	private var bestCombo = 0
+	private var errors = 0
+	private var cur: Puzzles.Puzzle? = null
+	private var pos = Position()
+	private var step = 0
+	private var hero = P.WHITE
+	private var busy = false
+	private val board = BoardView(a)
+	private lateinit var timer: TextView
+	private lateinit var info: TextView
+	private lateinit var controls: LinearLayout
+
+	private val tick = object : Runnable {
+		override fun run() {
+			if (!running) return
+			val left = timeLeft()
+			timer.text = String.format(java.util.Locale.US, "%d:%02d", left / 60000, (left / 1000) % 60)
+			if (left <= 0) { end(); return }
+			BotRunner.main.postDelayed(this, 200)
+		}
+	}
+
+	private fun timeLeft() = maxOf(0L, endAt - penalty - System.currentTimeMillis())
+
+	override fun build(): View {
+		val box = ui.col(12, 10)
+		box.addView(ui.row(8, ui.button("‹", false) { a.pop() }, ui.title("Штурм задач")))
+		val head = ui.row(10)
+		timer = ui.text("3:00", 30f, ui.t.accent, true)
+		head.addView(timer, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		info = ui.text("", 15f, ui.t.text, true, Gravity.END)
+		head.addView(info)
+		box.addView(head, ui.lp())
+		board.showCoords = st.flag("coords", true)
+		board.showLegal = st.flag("legal", true)
+		board.canMove = { c -> running && !busy && c == hero && pos.side == hero }
+		board.onMove = { m -> onMove(m) }
+		box.addView(board, ui.lp())
+		controls = ui.row(8)
+		box.addView(controls, ui.lp())
+		refreshInfo()
+		if (!running && !over) {
+			controls.addView(ui.button("Старт ⚡") { start() }, ui.lp())
+			box.addView(ui.sub("Рекорд: ${st.stormBest}. Решай задачи как можно быстрее: первая — лёгкая, дальше сложнее. Неверный ход — минус 10 секунд и следующая задача."))
+		}
+		return ui.scroll(box)
+	}
+
+	private fun refreshInfo() {
+		info.text = "✓ $score  ·  серия $combo  ·  ✗ $errors"
+	}
+
+	private fun start() {
+		running = true; over = false; score = 0; combo = 0; bestCombo = 0; errors = 0; penalty = 0; used.clear()
+		endAt = System.currentTimeMillis() + 180_000
+		controls.removeAllViews()
+		controls.addView(ui.button("Закончить", false) { end() }, ui.lp())
+		next()
+		BotRunner.main.post(tick)
+	}
+
+	private fun next() {
+		if (pool.isEmpty()) { end(); return }
+		val target = 700 + score * 60
+		val cands = pool.filter { it.id !in used }.sortedBy { kotlin.math.abs(it.rating - target) }.take(6)
+		val p = cands.randomOrNull() ?: run { end(); return }
+		used.add(p.id)
+		cur = p
+		pos = Position.of(p.fen)
+		hero = pos.side
+		step = 0
+		board.markSquare = -1
+		board.whiteBottom = hero == P.WHITE
+		board.setPosition(pos.copy())
+		refreshInfo()
+	}
+
+	private fun onMove(m0: Int) {
+		val p = cur ?: return
+		var m = m0
+		if (m and BoardView.PROMO_ASK != 0) {
+			val base = m and BoardView.PROMO_ASK.inv()
+			val sol = pos.parseUci(p.moves[step])
+			m = if (M.from(sol) == M.from(base) && M.to(sol) == M.to(base)) sol
+			else pos.legalMoves().first { M.from(it) == M.from(base) && M.to(it) == M.to(base) && M.promo(it) == P.QUEEN }
+		}
+		val expected = pos.parseUci(p.moves[step])
+		val cap = pos.capturedBy(m) != 0
+		pos.make(m)
+		val mate = Tactics.isMate(pos)
+		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.forMove(cap, M.isCastle(m), pos.inCheck()))
+		board.setPosition(pos.copy(), m, true)
+		if (m == expected || (mate && p.mate > 0)) {
+			step++
+			if (mate || step >= p.moves.size) {
+				score++; combo++; bestCombo = maxOf(bestCombo, combo)
+				if (combo % 5 == 0) { penalty -= 3000; a.toast("Серия $combo: +3 с") }
+				ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.Kind.GOOD)
+				busy = true
+				BotRunner.main.postDelayed({ busy = false; if (running) next() }, 250)
+				refreshInfo()
+				return
+			}
+			busy = true
+			BotRunner.main.postDelayed({
+				val r = pos.parseUci(p.moves[step])
+				if (r != 0 && running) { val c2 = pos.capturedBy(r) != 0; pos.make(r); step++; board.setPosition(pos.copy(), r, true)
+					ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.forMove(c2, M.isCastle(r), pos.inCheck())) }
+				busy = false
+			}, 180)
+		} else {
+			errors++; combo = 0; penalty += 10_000
+			ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.Kind.BAD)
+			board.markSquare = M.to(m); board.markColor = 0x88FF3B30.toInt()
+			board.invalidate()
+			refreshInfo()
+			busy = true
+			BotRunner.main.postDelayed({ busy = false; if (running) next() }, 450)
+		}
+	}
+
+	private fun end() {
+		if (!running) return
+		running = false; over = true
+		BotRunner.main.removeCallbacks(tick)
+		val r = st.stormFinished(score)
+		controls.removeAllViews()
+		controls.addView(ui.button("Ещё штурм") { start() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		controls.addView(ui.button("К задачам", false) { a.pop() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		val body = ui.col(0, 6)
+		body.addView(ui.text("Решено: $score · лучшая серия $bestCombo · ошибок $errors", 15f))
+		r.lines.forEach { body.addView(ui.text(it, 14f)) }
+		a.dialog("Штурм окончен ⚡", body, "Отлично" to {})
+	}
+
+	override fun dispose() { running = false; BotRunner.main.removeCallbacks(tick) }
 }

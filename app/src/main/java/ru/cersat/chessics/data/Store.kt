@@ -115,12 +115,13 @@ class Store private constructor(private val ctx: Context) {
 	fun gameFinished(bot: Player?, score: Double, plies: Int, takebacks: Int, hvh: Boolean, mateByHuman: Boolean, timeControl: Boolean): Reward {
 		val r = Reward()
 		inc("games")
+		event("game")
 		if (hvh) {
 			inc("hvh")
 			if (plies >= 10) markActive(r)
 		} else if (bot != null) {
 			when {
-				score >= 1.0 -> inc("wins")
+				score >= 1.0 -> { inc("wins"); event("win"); if (bot.kind == Player.Kind.STOCKFISH) event("winSf") }
 				score > 0.0 -> inc("draws")
 				else -> inc("losses")
 			}
@@ -154,12 +155,20 @@ class Store private constructor(private val ctx: Context) {
 		return r
 	}
 
+	// Партия по Wi-Fi или Bluetooth — награды как за онлайн
+	fun lanFinished(score: Double, plies: Int): Reward {
+		inc("lan")
+		return onlineFinished(score, plies, true)
+	}
+
 	// Партия на lichess. score: 1 победа, 0.5 ничья, 0 поражение
-	fun onlineFinished(score: Double, plies: Int): Reward {
+	fun onlineFinished(score: Double, plies: Int, lan: Boolean = false): Reward {
 		val r = Reward()
-		inc("online")
+		if (!lan) inc("online")
+		event("game"); event("online")
+		if (score >= 1.0) event("win")
 		val g = when { score >= 1.0 -> { inc("onlineWins"); 6 }; score > 0 -> 3; plies >= 20 -> 1; else -> 0 }
-		if (g > 0) { r.diamonds += g; r.lines.add("Онлайн-партия: +$g 💎") }
+		if (g > 0) { r.diamonds += g; r.lines.add("${if (lan) "Партия по сети" else "Онлайн-партия"}: +$g 💎") }
 		if (plies >= 6) markActive(r)
 		checkAchievements(r)
 		addDiamonds(r.diamonds)
@@ -170,6 +179,7 @@ class Store private constructor(private val ctx: Context) {
 	fun countMotif(key: String): Reward {
 		val r = Reward()
 		inc(key)
+		event(if (key == "brilliant" || key == "great") key else "tactic")
 		checkAchievements(r)
 		if (r.diamonds > 0) addDiamonds(r.diamonds) else changed()
 		return r
@@ -180,6 +190,14 @@ class Store private constructor(private val ctx: Context) {
 		val solved = sp.getStringSet("solved", emptySet())!!.toMutableSet()
 		val first = solved.add(id)
 		sp.edit().putStringSet("solved", solved).apply()
+		event("puzzle")
+		if (clean) event("puzzleClean")
+		val rep = repeatDueToday(id)
+		updateRepeat(id, clean)
+		if (rep && !first) {
+			if (clean) { r.diamonds += 1; r.lines.add("🔁 Повторение: +1 💎") }
+			else r.lines.add("🔁 Задача вернётся завтра")
+		}
 		if (first) {
 			inc("puzzles")
 			if (clean) inc("puzzlesClean")
@@ -193,7 +211,7 @@ class Store private constructor(private val ctx: Context) {
 				sp.edit().putLong("dailySolved", today).apply()
 			}
 			markActive(r)
-		} else r.lines.add("Эта задача уже была решена — без награды")
+		} else if (!rep) r.lines.add("Эта задача уже была решена — без награды")
 		checkAchievements(r)
 		addDiamonds(r.diamonds)
 		return r
@@ -203,6 +221,138 @@ class Store private constructor(private val ctx: Context) {
 	val dailySolvedToday get() = sp.getLong("dailySolved", -1) == today
 
 	fun hintUsed() = inc("hints")
+
+	// ---------- рейтинг в задачах (Эло, K = 24; засчитывается только первая попытка) ----------
+	val puzzleRating get() = int("puzzleRating", 1200)
+
+	fun puzzleRated(id: String, rating: Int, success: Boolean): Int {
+		if (rating <= 0) return 0
+		val done = sp.getStringSet("ratedPuzzles", emptySet())!!.toMutableSet()
+		if (!done.add(id)) return 0
+		sp.edit().putStringSet("ratedPuzzles", done).apply()
+		val exp = 1.0 / (1 + 10.0.pow((rating - puzzleRating) / 400.0))
+		val d = (24 * ((if (success) 1.0 else 0.0) - exp)).roundToInt()
+		setInt("puzzleRating", (puzzleRating + d).coerceAtLeast(100))
+		max("puzzleRatingBest", puzzleRating)
+		changed()
+		return d
+	}
+
+	fun wasRated(id: String) = sp.getStringSet("ratedPuzzles", emptySet())!!.contains(id)
+
+	// ---------- повтор ошибок: интервалы 1, 3, 7, 14 дней ----------
+	private val intervals = intArrayOf(1, 3, 7, 14)
+
+	private fun repeatMap(): JSONObject = try { JSONObject(sp.getString("repeat", "{}")!!) } catch (_: Exception) { JSONObject() }
+
+	fun repeatIds(): List<String> {
+		val m = repeatMap()
+		return m.keys().asSequence().filter { m.getJSONObject(it).optLong("due") <= today }.toList()
+	}
+
+	fun repeatCount() = repeatMap().length()
+
+	private fun repeatDueToday(id: String): Boolean {
+		val o = repeatMap().optJSONObject(id) ?: return false
+		return o.optLong("due") <= today
+	}
+
+	// ошибка в задаче — ставим в очередь; чистое решение в срок — следующий интервал
+	fun updateRepeat(id: String, clean: Boolean) {
+		val m = repeatMap()
+		val o = m.optJSONObject(id)
+		if (!clean) m.put(id, JSONObject().put("due", today + 1).put("stage", 0))
+		else if (o != null && o.optLong("due") <= today) {
+			val st = o.optInt("stage") + 1
+			if (st >= intervals.size) m.remove(id) else m.put(id, JSONObject().put("due", today + intervals[st]).put("stage", st))
+		}
+		sp.edit().putString("repeat", m.toString()).apply()
+	}
+
+	// ---------- штурм ----------
+	val stormBest get() = stat("stormBest")
+
+	fun stormFinished(score: Int): Reward {
+		val r = Reward()
+		inc("storms")
+		val best = score > stormBest
+		max("stormBest", score)
+		event("storm", score)
+		val g = score / 2
+		if (g > 0) { r.diamonds += g; r.lines.add("Штурм: +$g 💎") }
+		if (best && score > 0) r.lines.add("🏅 Новый рекорд: $score")
+		if (score >= 5) markActive(r)
+		checkAchievements(r)
+		addDiamonds(r.diamonds)
+		return r
+	}
+
+	// ---------- эндшпиль и дебюты ----------
+	fun endgameDone(id: String) = sp.getStringSet("endgames", emptySet())!!.contains(id)
+
+	fun endgameFinished(id: String, success: Boolean, reward: Int): Reward {
+		val r = Reward()
+		if (!success) return r
+		event("endgame")
+		val set = sp.getStringSet("endgames", emptySet())!!.toMutableSet()
+		if (set.add(id)) {
+			sp.edit().putStringSet("endgames", set).apply()
+			setInt("st_endgames", set.size)
+			r.diamonds += reward; r.lines.add("Эндшпиль пройден: +$reward 💎")
+		} else r.lines.add("Пройдено снова — награда только за первый раз")
+		markActive(r)
+		checkAchievements(r)
+		addDiamonds(r.diamonds)
+		return r
+	}
+
+	fun openingDone(name: String) = sp.getStringSet("openings", emptySet())!!.contains(name)
+
+	fun openingFinished(name: String): Reward {
+		val r = Reward()
+		event("opening")
+		val set = sp.getStringSet("openings", emptySet())!!.toMutableSet()
+		if (set.add(name)) {
+			sp.edit().putStringSet("openings", set).apply()
+			setInt("st_openings", set.size)
+			r.diamonds += 2; r.lines.add("Линия выучена: +2 💎")
+		}
+		markActive(r)
+		checkAchievements(r)
+		addDiamonds(r.diamonds)
+		return r
+	}
+
+	// ---------- цели на день и неделю ----------
+	val week: Long get() = (today + 3) / 7 // недели с понедельника
+
+	fun event(key: String, amount: Int = 1) {
+		for ((period, list) in listOf("d$today" to Goals.daily(today), "w$week" to Goals.weekly(week))) {
+			list.forEachIndexed { i, g ->
+				if (g.key != key) return@forEachIndexed
+				val k = "goal_${period}_$i"
+				val cur = int(k)
+				setInt(k, if (g.max) maxOf(cur, amount) else cur + amount)
+			}
+		}
+	}
+
+	fun goalProgress(daily: Boolean, i: Int) = int("goal_${if (daily) "d$today" else "w$week"}_$i")
+	fun goalClaimed(daily: Boolean, i: Int) = sp.getBoolean("goalc_${if (daily) "d$today" else "w$week"}_$i", false)
+
+	fun claimGoal(daily: Boolean, i: Int): Int {
+		val list = if (daily) Goals.daily(today) else Goals.weekly(week)
+		val g = list[i]
+		if (goalClaimed(daily, i) || goalProgress(daily, i) < g.target) return 0
+		sp.edit().putBoolean("goalc_${if (daily) "d$today" else "w$week"}_$i", true).apply()
+		var total = g.reward
+		if (daily && list.indices.all { goalClaimed(true, it) }) total += 10
+		inc("goals")
+		val r = Reward()
+		checkAchievements(r)
+		addDiamonds(total + r.diamonds)
+		return total + r.diamonds
+	}
 
 	// ---------- достижения ----------
 	fun achieved(id: String) = sp.getBoolean("ach_$id", false)
@@ -234,7 +384,7 @@ class Store private constructor(private val ctx: Context) {
 		return true
 	}
 
-	fun selected(cat: Shop.Cat): String = sp.getString("sel_${cat.name}", Shop.items(cat).first().id)!!
+	fun selected(cat: Shop.Cat): String = sp.getString("sel_${cat.name}", if (cat == Shop.Cat.SOUND) "sn_classic" else Shop.items(cat).first().id)!!
 	fun select(cat: Shop.Cat, id: String) { sp.edit().putString("sel_${cat.name}", id).apply(); changed() }
 
 	// ---------- настройки ----------
@@ -318,6 +468,15 @@ object Achievements {
 		Ach("online1", "Выход в свет", "Сыграть партию на lichess", 10, 1) { it.stat("online") },
 		Ach("onlineWin1", "Победа в сети", "Выиграть партию на lichess", 25, 1) { it.stat("onlineWins") },
 		Ach("onlineWin10", "Гроза lichess", "10 побед на lichess", 80, 10) { it.stat("onlineWins") },
+		Ach("storm10", "Штурмовик", "Набрать 10 в штурме задач", 15, 10) { it.stat("stormBest") },
+		Ach("storm25", "Ураган", "Набрать 25 в штурме задач", 50, 25) { it.stat("stormBest") },
+		Ach("prate1600", "Тактик 1600", "Рейтинг в задачах 1600", 30, 1600) { it.stat("puzzleRatingBest") },
+		Ach("prate2000", "Тактик 2000", "Рейтинг в задачах 2000", 100, 2000) { it.stat("puzzleRatingBest") },
+		Ach("eg3", "Эндшпильщик", "Пройти 3 позиции тренажёра эндшпиля", 20, 3) { it.stat("endgames") },
+		Ach("egAll", "Техника", "Пройти все позиции тренажёра эндшпиля", 120, Endgames.ALL.size) { it.stat("endgames") },
+		Ach("op10", "Теоретик", "Выучить 10 дебютных линий", 30, 10) { it.stat("openings") },
+		Ach("goals20", "Целеустремлённый", "Выполнить 20 целей", 40, 20) { it.stat("goals") },
+		Ach("lan1", "По соседству", "Сыграть партию по Wi-Fi или Bluetooth", 15, 1) { it.stat("lan") },
 		Ach("gen5", "Генератор", "Решить 5 сгенерированных задач", 20, 5) { it.stat("genSolved") },
 		Ach("hvh5", "Живая доска", "Сыграть 5 партий на одном телефоне", 15, 5) { it.stat("hvh") },
 		Ach("shop5", "Коллекционер", "Купить 5 вещей в магазине", 30, 5) { it.stat("bought") }

@@ -18,6 +18,7 @@ class Engine(private val name: String, private val threads: Int) {
 	private val writeLock = Object()
 	private var curElo = -1
 	private var curMultiPv = 1
+	private var cur960 = false
 	@Volatile var lastError: String? = null
 		private set
 
@@ -61,7 +62,7 @@ class Engine(private val name: String, private val threads: Int) {
 				send("setoption name EvalFileSmall value ${small.absolutePath}")
 				send("isready")
 				readUntil("readyok") ?: throw IllegalStateException("нет readyok")
-				curElo = -1; curMultiPv = 1
+				curElo = -1; curMultiPv = 1; cur960 = false
 				lastError = null
 				return true
 			} catch (e: Exception) {
@@ -82,6 +83,12 @@ class Engine(private val name: String, private val threads: Int) {
 		curElo = elo
 	}
 
+	private fun set960(v: Boolean) {
+		if (v == cur960) return
+		send("setoption name UCI_Chess960 value $v")
+		cur960 = v
+	}
+
 	private fun setMultiPv(n: Int) {
 		if (n == curMultiPv) return
 		send("setoption name MultiPV value $n")
@@ -94,11 +101,11 @@ class Engine(private val name: String, private val threads: Int) {
 	private fun fail(e: Exception) { lastError = e.message ?: e.toString(); proc?.destroy(); proc = null }
 
 	// Ход бота. elo <= 0 — полная сила.
-	fun bestMove(ctx: Context, startFen: String, moves: String, elo: Int, movetime: Int): String? {
+	fun bestMove(ctx: Context, startFen: String, moves: String, elo: Int, movetime: Int, c960: Boolean = false): String? {
 		if (!start(ctx)) return null
 		synchronized(lock) {
 			return try {
-				setElo(elo); setMultiPv(1)
+				setElo(elo); setMultiPv(1); set960(c960)
 				send(positionCmd(startFen, moves))
 				send("go movetime $movetime")
 				readUntil("bestmove")?.split(" ")?.getOrNull(1)?.takeIf { it != "(none)" }
@@ -107,11 +114,11 @@ class Engine(private val name: String, private val threads: Int) {
 	}
 
 	// Анализ полной силой. go — «depth 3» или «movetime 300». Строки отсортированы от лучшей.
-	fun analyse(ctx: Context, startFen: String, moves: String, whiteToMove: Boolean, go: String, multipv: Int = 1): List<Line>? {
+	fun analyse(ctx: Context, startFen: String, moves: String, whiteToMove: Boolean, go: String, multipv: Int = 1, c960: Boolean = false): List<Line>? {
 		if (!start(ctx)) return null
 		synchronized(lock) {
 			try {
-				setElo(0); setMultiPv(multipv)
+				setElo(0); setMultiPv(multipv); set960(c960)
 				send(positionCmd(startFen, moves))
 				send("go $go")
 				val lines = arrayOfNulls<Line>(multipv)
@@ -194,7 +201,7 @@ object Stockfish {
 
 // Описание игрока: человек или бот
 data class Player(val kind: Kind, val level: Int = 0) {
-	enum class Kind { HUMAN, RANDOM, ALGO, MATERIAL, STOCKFISH }
+	enum class Kind { HUMAN, RANDOM, ALGO, MATERIAL, STOCKFISH, REMOTE }
 
 	val isHuman get() = kind == Kind.HUMAN
 
@@ -204,6 +211,7 @@ data class Player(val kind: Kind, val level: Int = 0) {
 		Kind.ALGO -> "Алгоритм · ${AlgoBot.LABELS[(level - 1).coerceIn(0, 4)]}"
 		Kind.MATERIAL -> "Материал · глубина $level"
 		Kind.STOCKFISH -> if (level <= 0) "Stockfish · полная сила" else "Stockfish $level"
+		Kind.REMOTE -> "Соперник по сети"
 	}
 
 	val shortName: String get() = when (kind) {
@@ -212,6 +220,7 @@ data class Player(val kind: Kind, val level: Int = 0) {
 		Kind.ALGO -> "Алгоритм $level"
 		Kind.MATERIAL -> "Материал $level"
 		Kind.STOCKFISH -> if (level <= 0) "Stockfish MAX" else "Stockfish $level"
+		Kind.REMOTE -> "Соперник"
 	}
 
 	// Примерный рейтинг. Для Stockfish — его UCI_Elo; для наших ботов — оценка «на глаз».
@@ -221,6 +230,7 @@ data class Player(val kind: Kind, val level: Int = 0) {
 		Kind.ALGO -> intArrayOf(400, 600, 800, 950, 1100)[(level - 1).coerceIn(0, 4)]
 		Kind.MATERIAL -> intArrayOf(500, 700, 900, 1050, 1200, 1300, 1400, 1450)[(level - 1).coerceIn(0, 7)]
 		Kind.STOCKFISH -> if (level <= 0) 3500 else level
+		Kind.REMOTE -> 0
 	}
 
 	fun encode() = "${kind.name}:$level"
