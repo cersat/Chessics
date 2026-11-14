@@ -20,7 +20,7 @@ object Puzzles {
 	class Puzzle(val id: String, val fen: String, val moves: List<String>, val mate: Int, val themes: List<String>, val generated: Boolean = false, val rating: Int = 0) {
 		val heroMoves get() = (moves.size + 1) / 2
 		val goal get() = if (mate > 0) "Мат в $mate" else "Выиграй материал"
-		val reward get() = if (mate > 0) mate + 1 else heroMoves + 1
+		val reward get() = if ((mate > 0 && mate >= 3) || heroMoves >= 3) 2 else 1
 
 		fun toJson(): JSONObject = JSONObject().put("id", id).put("fen", fen).put("moves", JSONArray(moves))
 			.put("mate", mate).put("themes", JSONArray(themes))

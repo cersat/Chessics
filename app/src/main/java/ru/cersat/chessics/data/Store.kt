@@ -91,9 +91,9 @@ class Store private constructor(private val ctx: Context) {
 		if (s > bestStreak) setInt("bestStreak", s)
 		sp.edit().putLong("lastActive", today).apply()
 		val act = daySet("activeDays"); act.add(today); saveDaySet("activeDays", act)
-		r.diamonds += 3
-		r.lines.add("🔥 Серия: $s ${days(s)} (+3 💎)")
-		val bonus = when (s) { 3 -> 10; 7 -> 25; 14 -> 40; 30 -> 100; 50 -> 150; 100 -> 300; 180 -> 400; 365 -> 1000; else -> 0 }
+		r.diamonds += 1
+		r.lines.add("🔥 Серия: $s ${days(s)} (+1 💎)")
+		val bonus = when (s) { 3 -> 3; 7 -> 8; 14 -> 12; 30 -> 30; 50 -> 45; 100 -> 90; 180 -> 120; 365 -> 300; else -> 0 }
 		if (bonus > 0) { r.diamonds += bonus; r.lines.add("🏅 Рубеж серии $s дней: +$bonus 💎") }
 	}
 
@@ -127,11 +127,10 @@ class Store private constructor(private val ctx: Context) {
 			}
 			val elo = bot.elo
 			var gain = 0
-			if (score >= 1.0) gain = maxOf(2, (elo / 150.0).roundToInt())
-			else if (score > 0) gain = maxOf(1, (elo / 300.0).roundToInt())
-			else if (plies >= 20) gain = 1
+			if (score >= 1.0) gain = maxOf(1, (elo / 500.0).roundToInt())
+			else if (score > 0) gain = if (elo >= 1000) 1 else 0
 			if (takebacks > 0 && gain > 1) { gain /= 2; r.lines.add("↩ Были отмены ходов — награда вдвое меньше") }
-			if (timeControl && score >= 1.0) { gain += 2; r.lines.add("⏱ Партия на время: +2 💎") }
+			if (timeControl && score >= 1.0 && elo >= 1000) { gain += 1; r.lines.add("⏱ Партия на время: +1 💎") }
 			if (gain > 0) { r.diamonds += gain; r.lines.add("Партия: +$gain 💎") }
 			// рейтинг по формуле Эло, K = 32
 			val exp = 1.0 / (1 + 10.0.pow((elo - rating) / 400.0))
@@ -167,7 +166,7 @@ class Store private constructor(private val ctx: Context) {
 		if (!lan) inc("online")
 		event("game"); event("online")
 		if (score >= 1.0) event("win")
-		val g = when { score >= 1.0 -> { inc("onlineWins"); 6 }; score > 0 -> 3; plies >= 20 -> 1; else -> 0 }
+		val g = when { score >= 1.0 -> { inc("onlineWins"); 3 }; score > 0 -> 1; else -> 0 }
 		if (g > 0) { r.diamonds += g; r.lines.add("${if (lan) "Партия по сети" else "Онлайн-партия"}: +$g 💎") }
 		if (plies >= 6) markActive(r)
 		checkAchievements(r)
@@ -195,19 +194,18 @@ class Store private constructor(private val ctx: Context) {
 		val rep = repeatDueToday(id)
 		updateRepeat(id, clean)
 		if (rep && !first) {
-			if (clean) { r.diamonds += 1; r.lines.add("🔁 Повторение: +1 💎") }
-			else r.lines.add("🔁 Задача вернётся завтра")
+			r.lines.add(if (clean) "🔁 Повторение засчитано" else "🔁 Задача вернётся завтра")
 		}
 		if (first) {
 			inc("puzzles")
 			if (clean) inc("puzzlesClean")
 			if (id.startsWith("gen_")) inc("genSolved")
-			val g = if (clean) reward else 1
+			val g = if (clean) reward else 0
 			r.diamonds += g
-			r.lines.add("Задача решена: +$g 💎")
+			r.lines.add(if (g > 0) "Задача решена: +$g 💎" else "Задача решена (с ошибкой или подсказкой — без алмазов)")
 			if (daily) {
-				r.diamonds += 5
-				r.lines.add("🗓 Задача дня: +5 💎")
+				r.diamonds += 2
+				r.lines.add("🗓 Задача дня: +2 💎")
 				sp.edit().putLong("dailySolved", today).apply()
 			}
 			markActive(r)
@@ -278,7 +276,7 @@ class Store private constructor(private val ctx: Context) {
 		val best = score > stormBest
 		max("stormBest", score)
 		event("storm", score)
-		val g = score / 2
+		val g = score / 5
 		if (g > 0) { r.diamonds += g; r.lines.add("Штурм: +$g 💎") }
 		if (best && score > 0) r.lines.add("🏅 Новый рекорд: $score")
 		if (score >= 5) markActive(r)
@@ -315,7 +313,7 @@ class Store private constructor(private val ctx: Context) {
 		if (set.add(name)) {
 			sp.edit().putStringSet("openings", set).apply()
 			setInt("st_openings", set.size)
-			r.diamonds += 2; r.lines.add("Линия выучена: +2 💎")
+			r.diamonds += 1; r.lines.add("Линия выучена: +1 💎")
 		}
 		markActive(r)
 		checkAchievements(r)
@@ -346,7 +344,7 @@ class Store private constructor(private val ctx: Context) {
 		if (goalClaimed(daily, i) || goalProgress(daily, i) < g.target) return 0
 		sp.edit().putBoolean("goalc_${if (daily) "d$today" else "w$week"}_$i", true).apply()
 		var total = g.reward
-		if (daily && list.indices.all { goalClaimed(true, it) }) total += 10
+		if (daily && list.indices.all { goalClaimed(true, it) }) total += 3
 		inc("goals")
 		val r = Reward()
 		checkAchievements(r)
@@ -429,7 +427,8 @@ class Store private constructor(private val ctx: Context) {
 }
 
 object Achievements {
-	class Ach(val id: String, val title: String, val desc: String, val reward: Int, val target: Int, val value: (Store) -> Int) {
+	class Ach(val id: String, val title: String, val desc: String, base: Int, val target: Int, val value: (Store) -> Int) {
+		val reward = maxOf(2, base / 2)
 		fun test(s: Store) = value(s) >= target
 		fun progress(s: Store) = minOf(value(s), target)
 	}

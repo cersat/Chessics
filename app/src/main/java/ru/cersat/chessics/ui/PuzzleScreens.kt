@@ -48,7 +48,7 @@ class PuzzlesScreen(a: MainActivity) : Screen(a) {
 		}
 		Puzzles.daily(a)?.let { pz ->
 			val solved = st.dailySolvedToday
-			box.addView(ui.button(if (solved) "🗓 Задача дня — решена ✓" else "🗓 Задача дня · ${pz.goal} · +5 💎", !solved) { a.push(PuzzleScreen(a, pz, true)) })
+			box.addView(ui.button(if (solved) "🗓 Задача дня — решена ✓" else "🗓 Задача дня · ${pz.goal} · +2 💎", !solved) { a.push(PuzzleScreen(a, pz, true)) })
 		}
 		box.addView(generatorCard())
 		val gen = Puzzles.generated(a)
@@ -191,7 +191,7 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 		failOnce()
 		if (!offLine) {
 			board.hintMove = pos.parseUci(pz.moves[step]); board.invalidate()
-			update("Подсказка показана — награда будет 1 💎")
+			update("Подсказка показана — алмазов за эту задачу не будет")
 			return
 		}
 		busy = true; update("Ищу ход…")
@@ -201,7 +201,7 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 			BotRunner.main.post {
 				busy = false
 				if (mv != null) { board.hintMove = p.parseUci(mv); board.invalidate() }
-				update("Подсказка показана — награда будет 1 💎")
+				update("Подсказка показана — алмазов за эту задачу не будет")
 			}
 		}
 	}

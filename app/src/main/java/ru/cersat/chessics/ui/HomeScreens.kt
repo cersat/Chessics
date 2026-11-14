@@ -166,7 +166,7 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		for (daily in listOf(true, false)) {
 			c.addView(ui.space(8))
 			val list = if (daily) ru.cersat.chessics.data.Goals.daily(st.today) else ru.cersat.chessics.data.Goals.weekly(st.week)
-			c.addView(ui.sub(if (daily) "На сегодня · все три — ещё +10 💎" else "На неделю", 12f))
+			c.addView(ui.sub(if (daily) "На сегодня · все три — ещё +3 💎" else "На неделю", 12f))
 			list.forEachIndexed { i, g ->
 				val prog = minOf(st.goalProgress(daily, i), g.target)
 				val claimed = st.goalClaimed(daily, i)
@@ -210,7 +210,7 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		r.addView(ui.col(0, 4,
 			ui.text("🗓 Задача дня", 17f, bold = true),
 			ui.sub("${pz.goal} · ход ${if (pos.side == P.WHITE) "белых" else "чёрных"}"),
-			ui.text(if (solved) "✓ Решена сегодня" else "+5 💎 бонус за решение", 13f, if (solved) ui.t.accent else ui.t.text)
+			ui.text(if (solved) "✓ Решена сегодня" else "+2 💎 бонус за решение", 13f, if (solved) ui.t.accent else ui.t.text)
 		), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		ui.clickable(r, ui.t.card, 18f) { a.push(PuzzleScreen(a, pz, true)) }
 		return r
