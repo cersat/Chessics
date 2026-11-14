@@ -1,0 +1,1 @@
+F-Droid preparation: Stockfish is built from source, build flavor with free piece sets only.

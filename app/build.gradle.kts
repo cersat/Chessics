@@ -1,4 +1,5 @@
 import java.net.URI
+import java.security.MessageDigest
 
 plugins {
 	id("com.android.application")
@@ -8,14 +9,22 @@ plugins {
 android {
 	namespace = "ru.cersat.chessics"
 	compileSdk = 36
+	ndkVersion = "28.2.13676358"
 
 	defaultConfig {
 		applicationId = "ru.cersat.chessics"
 		minSdk = 26
 		targetSdk = 36
-		versionCode = 4
-		versionName = "1.0.3"
+		versionCode = 5
+		versionName = "1.0.4"
 		ndk { abiFilters += listOf("arm64-v8a") }
+	}
+
+	// full — все наборы фигур (релизы на GitHub); fdroid — только со свободными лицензиями
+	flavorDimensions += "dist"
+	productFlavors {
+		create("full") { dimension = "dist" }
+		create("fdroid") { dimension = "dist" }
 	}
 
 	signingConfigs {
@@ -30,7 +39,7 @@ android {
 	buildTypes {
 		release {
 			isMinifyEnabled = false
-			signingConfig = signingConfigs.getByName("release")
+			if (file("../chessics.jks").exists()) signingConfig = signingConfigs.getByName("release")
 		}
 	}
 
@@ -46,29 +55,87 @@ android {
 	androidResources {
 		noCompress += listOf("nnue")
 	}
+
+	sourceSets {
+		getByName("main") {
+			jniLibs.srcDir(layout.buildDirectory.dir("stockfish/jniLibs"))
+		}
+	}
+
+	dependenciesInfo {
+		// F-Droid не принимает зашифрованный блок зависимостей Google
+		includeInApk = false
+		includeInBundle = false
+	}
 }
 
 kotlin {
 	compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
 }
 
-// Нейросети Stockfish (75 МБ) не храним в git — скачиваем перед сборкой
-val nets = mapOf(
-	"nn-1c0000000000.nnue" to 74874478L,
-	"nn-37f18f62d772.nnue" to 3519630L
-)
+// Нейросети Stockfish (75 МБ) не храним в git — скачиваем перед сборкой.
+// Имя файла — начало его SHA-256, его и проверяем.
+val nets = listOf("nn-1c0000000000.nnue", "nn-37f18f62d772.nnue")
+val netsDir = file("src/main/assets")
+
+fun sha256(f: File): String {
+	val md = MessageDigest.getInstance("SHA-256")
+	f.inputStream().use { inp ->
+		val buf = ByteArray(1 shl 16)
+		while (true) { val n = inp.read(buf); if (n <= 0) break; md.update(buf, 0, n) }
+	}
+	return md.digest().joinToString("") { "%02x".format(it) }
+}
+
+fun netOk(f: File) = f.exists() && sha256(f).startsWith(f.name.removePrefix("nn-").removeSuffix(".nnue"))
+
 val downloadNets by tasks.registering {
-	val dir = file("src/main/assets")
-	outputs.files(nets.keys.map { File(dir, it) })
+	outputs.files(nets.map { File(netsDir, it) })
 	doLast {
-		dir.mkdirs()
-		for ((name, size) in nets) {
-			val f = File(dir, name)
-			if (f.exists() && f.length() == size) continue
+		netsDir.mkdirs()
+		for (name in nets) {
+			val f = File(netsDir, name)
+			if (netOk(f)) continue
 			logger.lifecycle("Скачиваю $name")
 			URI("https://tests.stockfishchess.org/api/nn/$name").toURL().openStream().use { inp -> f.outputStream().use { inp.copyTo(it) } }
-			check(f.length() == size) { "$name: неверный размер ${f.length()}" }
+			check(netOk(f)) { "$name: контрольная сумма не совпала" }
 		}
 	}
 }
-tasks.named("preBuild") { dependsOn(downloadNets) }
+
+// Stockfish 17.1 из подмодуля external/stockfish, собирается NDK под arm64: обычная версия и с dotprod
+val sfSrc = rootProject.file("external/stockfish/src")
+val sfOut = layout.buildDirectory.dir("stockfish/jniLibs/arm64-v8a")
+val ndkDir = androidComponents.sdkComponents.ndkDirectory
+
+val buildStockfish by tasks.registering {
+	dependsOn(downloadNets)
+	inputs.dir(sfSrc)
+	outputs.dir(sfOut)
+	doLast {
+		check(File(sfSrc, "Makefile").exists()) { "Нет исходников Stockfish: выполни git submodule update --init" }
+		val host = if (System.getProperty("os.name").lowercase().contains("mac")) "darwin-x86_64" else "linux-x86_64"
+		val bin = File(ndkDir.get().asFile, "toolchains/llvm/prebuilt/$host/bin")
+		val out = sfOut.get().asFile.apply { mkdirs() }
+		val jobs = Runtime.getRuntime().availableProcessors().toString()
+		for ((arch, lib) in listOf("armv8" to "libstockfish.so", "armv8-dotprod" to "libstockfish_dp.so")) {
+			val work = layout.buildDirectory.dir("stockfish/work/$arch").get().asFile
+			work.deleteRecursively()
+			sfSrc.copyRecursively(work)
+			for (n in nets) File(netsDir, n).copyTo(File(work, n), true)
+			fun run(vararg cmd: String) {
+				val pb = ProcessBuilder(*cmd).directory(work).redirectErrorStream(true)
+				pb.environment()["PATH"] = bin.absolutePath + File.pathSeparator + System.getenv("PATH")
+				val p = pb.start()
+				p.inputStream.bufferedReader().forEachLine { logger.info(it) }
+				check(p.waitFor() == 0) { "Ошибка: ${cmd.joinToString(" ")}" }
+			}
+			logger.lifecycle("Собираю Stockfish ($arch)")
+			run("make", "-j$jobs", "build", "ARCH=$arch", "COMP=ndk", "EXTRACXXFLAGS=-DNNUE_EMBEDDING_OFF")
+			run(File(bin, "llvm-strip").absolutePath, "stockfish")
+			File(work, "stockfish").copyTo(File(out, lib), true)
+		}
+	}
+}
+
+tasks.named("preBuild") { dependsOn(downloadNets, buildStockfish) }

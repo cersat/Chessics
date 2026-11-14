@@ -1,0 +1,1 @@
+Chess with Stockfish, bots, puzzles, daily streaks, lichess online play and widgets

@@ -233,7 +233,7 @@ class SettingsScreen(a: MainActivity) : Screen(a) {
 		about.addView(ui.text("О приложении", 16f, bold = true))
 		about.addView(ui.sub("Chessics. Движок Stockfish 17.1 (GPLv3, stockfishchess.org) работает прямо на телефоне. " +
 			"Боты «Материал» и «Алгоритм» перенесены из chess-bots.js. Фигуры — из lichess: " +
-			Shop.PIECES.joinToString("; ") { it.credit } + ". Задачи — из открытой базы lichess (CC0), генератор в приложении проверяет свои задачи Stockfish. Ходы оценивает Stockfish: !! бриллиантовый (жертва, после которой позиция не хуже), ! отличный (единственный сильный), ★ лучший, 👍 очень хороший, ✓ хороший, □ единственный, ?! неточность, ? ошибка, ?? зевок.", 12f))
+			Shop.items(Shop.Cat.PIECES).joinToString("; ") { (it as Shop.Pieces).credit } + ". Задачи — из открытой базы lichess (CC0), генератор в приложении проверяет свои задачи Stockfish. Ходы оценивает Stockfish: !! бриллиантовый (жертва, после которой позиция не хуже), ! отличный (единственный сильный), ★ лучший, 👍 очень хороший, ✓ хороший, □ единственный, ?! неточность, ? ошибка, ?? зевок.", 12f))
 		about.addView(ui.space(6))
 		about.addView(ui.sub("Виджеты: долгое нажатие на рабочем столе → Виджеты → Chessics («Серия» и «Задача дня»).", 12f))
 		box.addView(about)

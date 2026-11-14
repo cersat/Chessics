@@ -15,6 +15,8 @@ class Store private constructor(private val ctx: Context) {
 	private val sp: SharedPreferences = ctx.getSharedPreferences("chessics", Context.MODE_PRIVATE)
 	private val listeners = ArrayList<() -> Unit>()
 
+	init { Shop.init(ctx) }
+
 	fun onChange(l: () -> Unit) { listeners.add(l) }
 	fun removeListener(l: () -> Unit) { listeners.remove(l) }
 	private fun changed() {

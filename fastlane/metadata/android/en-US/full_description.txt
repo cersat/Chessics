@@ -1,0 +1,35 @@
+Chessics is a chess app where everything runs on your phone.
+
+<b>Opponents</b>
+<ul>
+<li>Stockfish 17.1 on device: 1350 to 3000 Elo and full strength</li>
+<li>Own bots: "Material" (search, counts material only) and "Algorithm" (rules, no search)</li>
+<li>Two players on one phone: face to face or pass-and-play, with a chess clock</li>
+<li>Any player for each side, even bot vs bot</li>
+<li>Online via lichess.org: random opponents, challenge a friend, server Stockfish (your own lichess account is required)</li>
+</ul>
+
+<b>Review</b>
+<ul>
+<li>Stockfish evaluation bar</li>
+<li>Game review with move classification: brilliant, great, best, inaccuracy, mistake, blunder</li>
+<li>Accuracy, evaluation graph, PGN export</li>
+</ul>
+
+<b>Puzzles</b>
+<ul>
+<li>Hundreds of puzzles from the open lichess database by theme: mate in 1–4, fork, skewer, pin, discovered attack, sacrifice and more</li>
+<li>Daily puzzle and a generator of new puzzles on a chosen theme</li>
+</ul>
+
+<b>Progress</b>
+<ul>
+<li>Daily streak with streak freezes</li>
+<li>Diamonds for wins, puzzles and achievements</li>
+<li>Shop: themes (dark and light), boards, piece sets, widget skins</li>
+<li>Streak and daily puzzle widgets, evening reminder</li>
+</ul>
+
+No ads, no trackers, no in-app purchases for money.
+
+The interface is in Russian.

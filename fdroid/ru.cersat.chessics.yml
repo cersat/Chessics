@@ -1,0 +1,29 @@
+Categories:
+  - Games
+License: GPL-3.0-or-later
+AuthorName: cersat
+AuthorEmail: kotik22157749@gmail.com
+SourceCode: https://github.com/cersat/Chessics
+IssueTracker: https://github.com/cersat/Chessics/issues
+
+AutoName: Chessics
+
+RepoType: git
+Repo: https://github.com/cersat/Chessics.git
+
+Builds:
+  - versionName: 1.0.4
+    versionCode: 5
+    commit: v1.0.4
+    subdir: app
+    submodules: true
+    gradle:
+      - fdroid
+    rm:
+      - chessics.jks
+    ndk: 28.2.13676358
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags
+CurrentVersion: 1.0.4
+CurrentVersionCode: 5

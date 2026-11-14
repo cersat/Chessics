@@ -91,14 +91,23 @@ object Shop {
 	fun items(cat: Cat): List<Item> = when (cat) {
 		Cat.THEME -> THEMES
 		Cat.BOARD -> BOARDS
-		Cat.PIECES -> PIECES
+		Cat.PIECES -> PIECES.filter { it.set in installedSets }
 		Cat.WIDGET -> WIDGETS
+	}
+
+	// Наборы фигур, которые есть в этой сборке (в варианте для F-Droid — только со свободными лицензиями)
+	private var installedSets: Set<String> = PIECES.map { it.set }.toSet()
+
+	fun init(ctx: Context) {
+		installedSets = PIECES.map { it.set }.filter {
+			ctx.resources.getIdentifier("pc_${it}_wk", "drawable", ctx.packageName) != 0
+		}.toSet()
 	}
 
 	fun byId(id: String): Item? = (THEMES + BOARDS + PIECES + WIDGETS).firstOrNull { it.id == id }
 
 	fun theme(ctx: Context) = byId(Store.get(ctx).selected(Cat.THEME)) as? Theme ?: THEMES[0]
 	fun board(ctx: Context) = byId(Store.get(ctx).selected(Cat.BOARD)) as? Board ?: BOARDS[0]
-	fun pieces(ctx: Context) = byId(Store.get(ctx).selected(Cat.PIECES)) as? Pieces ?: PIECES[0]
+	fun pieces(ctx: Context) = (byId(Store.get(ctx).selected(Cat.PIECES)) as? Pieces)?.takeIf { it.set in installedSets } ?: PIECES[0]
 	fun widget(ctx: Context) = byId(Store.get(ctx).selected(Cat.WIDGET)) as? Widget ?: WIDGETS[0]
 }

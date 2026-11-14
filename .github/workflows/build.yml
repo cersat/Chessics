@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-java@v4
         with:
@@ -34,14 +36,14 @@ jobs:
       - name: Build
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease
+          ./gradlew --no-daemon assembleFullRelease assembleFdroidRelease
 
       - name: Rename
         id: v
         run: |
           V=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           echo "version=$V" >> $GITHUB_OUTPUT
-          cp app/build/outputs/apk/release/app-release.apk Chessics-$V.apk
+          cp app/build/outputs/apk/full/release/app-full-release.apk Chessics-$V.apk
 
       - uses: actions/upload-artifact@v4
         with:
