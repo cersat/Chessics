@@ -127,8 +127,9 @@ val buildStockfish by tasks.registering {
 				val pb = ProcessBuilder(*cmd).directory(work).redirectErrorStream(true)
 				pb.environment()["PATH"] = bin.absolutePath + File.pathSeparator + System.getenv("PATH")
 				val p = pb.start()
-				p.inputStream.bufferedReader().forEachLine { logger.info(it) }
-				check(p.waitFor() == 0) { "Ошибка: ${cmd.joinToString(" ")}" }
+				val log = ArrayList<String>()
+				p.inputStream.bufferedReader().forEachLine { logger.info(it); log.add(it) }
+				check(p.waitFor() == 0) { "Ошибка: ${cmd.joinToString(" ")}\n" + log.takeLast(40).joinToString("\n") }
 			}
 			logger.lifecycle("Собираю Stockfish ($arch)")
 			run("make", "-j$jobs", "build", "ARCH=$arch", "COMP=ndk", "EXTRACXXFLAGS=-DNNUE_EMBEDDING_OFF")
