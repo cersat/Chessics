@@ -33,7 +33,8 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 	private var loaded = false
 
 	private val clocks = listOf(10 to 0, 10 to 5, 15 to 10, 30 to 0, 30 to 20)
-	private val aiClocks = listOf(3 to 2, 5 to 3, 10 to 0, 15 to 10, 30 to 0)
+	// Board API: блиц разрешён только в вызовах и против ИИ, пуля — нигде
+	private val challengeClocks = listOf(3 to 0, 3 to 2, 5 to 0, 5 to 3, 10 to 0, 10 to 5, 15 to 10, 30 to 0)
 
 	override fun build(): View {
 		val box = ui.col(16, 14)
@@ -91,18 +92,24 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 		val rated = st.flag("liRated", false)
 		val seekCard = ui.card()
 		seekCard.addView(ui.text("Случайный соперник", 17f, bold = true))
-		seekCard.addView(ui.sub("Lichess пускает внешние приложения (Board API) только в рапид и классику."))
+		seekCard.addView(ui.sub("Lichess пускает внешние приложения в поиск соперника только на рапиде и классике. Блиц — через вызов друга или против Stockfish ниже; пулю внешним приложениям lichess не даёт совсем."))
 		seekCard.addView(ui.space(10))
 		seekCard.addView(ui.chips(clocks.mapIndexed { i, (m, inc) -> "$m+$inc" to (i == tc) }, 5) { st.setStr("liClock", "$it"); a.refresh() })
 		seekCard.addView(ui.space(8))
 		seekCard.addView(ui.chips(listOf("Товарищеская" to !rated, "Рейтинговая" to rated), 2) { st.setFlag("liRated", it == 1); a.refresh() })
 		seekCard.addView(ui.space(10))
 		seekCard.addView(ui.button("Найти соперника") { startSeek(clocks[tc], rated) })
+		seekCard.addView(ui.space(8))
+		seekCard.addView(ui.button("Блиц и пуля со случайным — на lichess.org", false) { a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Lichess.HOST))) })
 		box.addView(seekCard)
+
+		val ftc = st.str("liFriendClock", "1").toInt().coerceIn(0, challengeClocks.size - 1)
 
 		val friend = ui.card()
 		friend.addView(ui.text("Вызвать друга", 17f, bold = true))
-		friend.addView(ui.sub("Время и рейтинговость — как выбрано выше."))
+		friend.addView(ui.sub("Рейтинговость — как выбрано выше. Здесь можно и блиц."))
+		friend.addView(ui.space(8))
+		friend.addView(ui.chips(challengeClocks.mapIndexed { i, (m, inc) -> "$m+$inc" to (i == ftc) }, 4) { st.setStr("liFriendClock", "$it"); a.refresh() })
 		friend.addView(ui.space(8))
 		val name = EditText(a).apply {
 			hint = "ник на lichess"; setTextColor(ui.t.text); setHintTextColor(ui.t.sub); setSingleLine()
@@ -113,22 +120,22 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 		friend.addView(ui.button("Вызвать") {
 			val u = name.text.toString().trim()
 			if (u.isEmpty()) return@button
-			val (m, inc) = clocks[tc]
+			val (m, inc) = challengeClocks[ftc]
 			challenge("/api/challenge/$u", mapOf("rated" to "$rated", "clock.limit" to "${m * 60}", "clock.increment" to "$inc", "color" to "random"), "Ждём, пока $u примет вызов…")
 		})
 		box.addView(friend)
 
 		val ai = ui.card()
 		val lvl = st.str("liAi", "3").toInt()
-		val aiTc = st.str("liAiClock", "2").toInt().coerceIn(0, aiClocks.size - 1)
+		val aiTc = st.str("liAiTc", "1").toInt().coerceIn(0, challengeClocks.size - 1)
 		ai.addView(ui.text("Stockfish на сервере lichess", 17f, bold = true))
 		ai.addView(ui.space(8))
 		ai.addView(ui.chips((1..8).map { "Ур. $it" to (it == lvl) }, 4) { st.setStr("liAi", "${it + 1}"); a.refresh() })
 		ai.addView(ui.space(8))
-		ai.addView(ui.chips(aiClocks.mapIndexed { i, (m, inc) -> "$m+$inc" to (i == aiTc) }, 5) { st.setStr("liAiClock", "$it"); a.refresh() })
+		ai.addView(ui.chips(challengeClocks.mapIndexed { i, (m, inc) -> "$m+$inc" to (i == aiTc) }, 4) { st.setStr("liAiTc", "$it"); a.refresh() })
 		ai.addView(ui.space(10))
 		ai.addView(ui.button("Играть") {
-			val (m, inc) = aiClocks[aiTc]
+			val (m, inc) = challengeClocks[aiTc]
 			Lichess.exec.execute {
 				try {
 					val o = Lichess.call(a, "POST", "/api/challenge/ai", mapOf("level" to "$lvl", "clock.limit" to "${m * 60}", "clock.increment" to "$inc", "color" to "random"))
