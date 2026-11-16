@@ -98,11 +98,11 @@ class OpeningsScreen(a: MainActivity) : Screen(a) {
 		if (q.isNotEmpty()) {
 			val found = Openings.all(a).filter { it.name.lowercase().contains(q) || it.eco.lowercase() == q }.take(60)
 			if (found.isEmpty()) list.addView(ui.sub("Ничего не нашлось"))
-			for (o in found) list.addView(line(o, st.openingDone(o.name)))
+			for (o in found) list.addView(line(o))
 			return
 		}
 		for ((fam, lines) in Openings.families(a)) {
-			val done = lines.count { st.openingDone(it.name) }
+			val done = lines.count { o -> (0..1).any { st.openingDone(o.doneKey(it)) } }
 			val isOpen = fam == openFamily
 			val head = ui.row(8)
 			head.setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(12))
@@ -110,18 +110,25 @@ class OpeningsScreen(a: MainActivity) : Screen(a) {
 			head.addView(ui.text(if (isOpen) "▴" else "▾", 20f, ui.t.sub))
 			ui.clickable(head, if (isOpen) ui.t.card2 else ui.t.card, 14f) { openFamily = if (isOpen) "" else fam; fill() }
 			list.addView(head)
-			if (isOpen) for (o in lines.sortedBy { it.moves.size }) list.addView(line(o, st.openingDone(o.name)))
+			if (isOpen) for (o in lines.sortedBy { it.moves.size }) list.addView(line(o))
 		}
 	}
 
-	private fun line(o: Openings.Opening, done: Boolean): View {
+	private fun line(o: Openings.Opening): View {
+		val st = a.store
+		val done = (0..1).any { st.openingDone(o.doneKey(it)) }
 		val r = ui.col(0, 6)
 		r.setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10))
 		r.addView(ui.text((if (done) "✅ " else "") + o.name, 14f, bold = true))
-		r.addView(ui.sub("${o.eco} · ${(o.moves.size + 1) / 2} ход.", 12f))
+		r.addView(ui.sub(if (o.isSystem) "${o.eco} · система: ${o.sysWhite?.size ?: o.sysBlack?.size} ходов своей стороны, соперник играет что угодно"
+			else "${o.eco} · ${(o.moves.size + 1) / 2} ход.", 12f))
 		val b = ui.row(8)
-		b.addView(ui.button("За белых", false) { a.push(OpeningTrainerScreen(a, o, P.WHITE)) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-		b.addView(ui.button("За чёрных", false) { a.push(OpeningTrainerScreen(a, o, P.BLACK)) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		for (c in 0..1) {
+			if (o.isSystem && o.system(c) == null) continue
+			b.addView(ui.button((if (st.openingDone(o.doneKey(c))) "✓ " else "") + if (c == P.WHITE) "За белых" else "За чёрных", false) {
+				a.push(OpeningTrainerScreen(a, o, c))
+			}, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		}
 		r.addView(b)
 		r.background = ui.round(ui.t.card, 14f)
 		return r
@@ -140,6 +147,11 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 	private lateinit var movesText: TextView
 	private lateinit var controls: LinearLayout
 	private val sans = ArrayList<String>()
+	private val sys = o.system(color) // для системы — только свои ходы
+	private var mine = 0 // сколько своих ходов системы уже сделано
+	private val bot = ru.cersat.chessics.bots.AlgoBot(3)
+	private fun expectedMove(): Int = if (sys != null) (if (mine < sys.size) pos.parseUci(sys[mine]) else 0) else pos.parseUci(o.moves[step])
+	private fun lineOver() = if (sys != null) mine >= sys.size else step >= o.moves.size
 
 	override fun build(): View {
 		val box = ui.col(12, 10)
@@ -172,14 +184,14 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 		controls.removeAllViews()
 		if (!done) controls.addView(ui.button("💡 Подсказать ход", false) {
 			mistakes++
-			board.hintMove = pos.parseUci(o.moves[step]); board.invalidate()
+			board.hintMove = expectedMove(); board.invalidate()
 		}, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		controls.addView(ui.button("Заново", false) { restart() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 	}
 
 	private fun restart() {
 		while (step > 0) { pos.unmake(); step-- }
-		sans.clear(); done = false; mistakes = 0; busy = false
+		sans.clear(); done = false; mistakes = 0; busy = false; mine = 0
 		board.markSquare = -1
 		board.setPosition(pos.copy())
 		update(null)
@@ -196,15 +208,20 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 
 	private fun autoPlay() {
 		if (done) return
-		if (step >= o.moves.size) { finished(); return }
+		if (lineOver()) { finished(); return }
 		if (pos.side != color) {
-			val m = pos.parseUci(o.moves[step])
-			if (m == 0) return
+			// в системе соперник ходит как бот «Алгоритм», в обычной линии — по теории
+			val m = if (sys != null) bot.pick(pos.copy(), step) { false } else pos.parseUci(o.moves[step])
+			if (m == 0) { finished(); return }
 			play(m)
-			if (step >= o.moves.size) { finished(); return }
+			if (lineOver()) { finished(); return }
 		}
+		// соперник помешал системе — её ход стал невозможен
+		if (sys != null && expectedMove() == 0) { blocked = true; finished(); return }
 		update(null)
 	}
+
+	private var blocked = false
 
 	private fun onMove(m0: Int) {
 		var m = m0
@@ -212,11 +229,12 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 			val base = m and BoardView.PROMO_ASK.inv()
 			m = pos.legalMoves().first { M.from(it) == M.from(base) && M.to(it) == M.to(base) && M.promo(it) == P.QUEEN }
 		}
-		val expected = pos.parseUci(o.moves[step])
+		val expected = expectedMove()
 		if (m == expected) {
 			board.markSquare = -1
 			play(m)
-			if (step >= o.moves.size) { finished(); return }
+			mine++
+			if (lineOver()) { finished(); return }
 			busy = true
 			update(null)
 			BotRunner.main.postDelayed({ busy = false; autoPlay() }, 450)
@@ -225,7 +243,7 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 			Sounds.play(a, Sounds.Kind.BAD)
 			board.markSquare = M.to(m); board.markColor = 0x88FF3B30.toInt()
 			board.setPosition(pos.copy())
-			update("Не по теории. По линии здесь другой ход")
+			update(if (sys != null) "Не по системе. Здесь по плану другой ход" else "Не по теории. По линии здесь другой ход")
 		}
 	}
 
@@ -233,8 +251,9 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 		done = true
 		Sounds.play(a, Sounds.Kind.GOOD)
 		update(null)
+		if (blocked) a.toast("Соперник помешал закончить систему — засчитано то, что успел")
 		if (mistakes == 0) {
-			val r = a.store.openingFinished(o.name)
+			val r = a.store.openingFinished(o.doneKey(color))
 			val body = ui.col(0, 6)
 			r.lines.forEach { body.addView(ui.text(it, 14f)) }
 			a.dialog("Без ошибок! 📖", body.apply { if (childCount == 0) addView(ui.sub("Линия уже была выучена")) }, "Отлично" to {})

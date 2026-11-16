@@ -5,9 +5,13 @@ import ru.cersat.chessics.chess.Position
 
 // Дебюты: открытая база lichess chess-openings (CC0). Ключ позиции — расстановка, очередь хода и рокировки.
 object Openings {
-	class Opening(val eco: String, val name: String, val moves: List<String>, val key: String) {
+	// Обычная линия — ходы обеих сторон. Система — только ходы одной стороны (соперник играет что угодно).
+	class Opening(val eco: String, val name: String, val moves: List<String>, val key: String,
+		val sysWhite: List<String>? = null, val sysBlack: List<String>? = null) {
 		val family get() = name.substringBefore(":").trim()
-		val variation get() = name.substringAfter(":", "").trim()
+		val isSystem get() = sysWhite != null || sysBlack != null
+		fun system(color: Int) = if (color == 0) sysWhite else sysBlack
+		fun doneKey(color: Int) = if (isSystem) "$name|$color" else name
 	}
 
 	private var list: List<Opening>? = null
@@ -16,13 +20,23 @@ object Openings {
 	fun all(ctx: Context): List<Opening> {
 		list?.let { return it }
 		val out = ArrayList<Opening>()
-		ctx.assets.open("openings.tsv").bufferedReader().forEachLine { line ->
+		// openings_extra.tsv — линии, которых нет в базе lichess (добавлены вручную)
+		val systems = LinkedHashMap<String, Opening>()
+		for (file in listOf("openings.tsv", "openings_extra.tsv")) ctx.assets.open(file).bufferedReader().forEachLine { line ->
 			val t = line.split('\t')
-			if (t.size >= 4) out.add(Opening(t[0], t[1], t[2].split(' ').filter { it.isNotBlank() }, t[3]))
+			if (t.size < 4) return@forEachLine
+			val mv = t[2].split(' ').filter { it.isNotBlank() }
+			if (t.size >= 5) {
+				// система: строки «w» и «b» с одним названием объединяются
+				val old = systems[t[1]]
+				systems[t[1]] = Opening(t[0], t[1], emptyList(), "-",
+					if (t[4] == "w") mv else old?.sysWhite, if (t[4] == "b") mv else old?.sysBlack)
+			} else out.add(Opening(t[0], t[1], mv, t[3]))
 		}
+		out.addAll(systems.values)
 		list = out
 		// при совпадении ключей берём более длинную (точную) линию
-		byKey = out.groupBy { it.key }.mapValues { (_, v) -> v.maxBy { it.moves.size } }
+		byKey = out.filter { !it.isSystem }.groupBy { it.key }.mapValues { (_, v) -> v.maxBy { it.moves.size } }
 		return out
 	}
 
@@ -38,6 +52,16 @@ object Openings {
 		for (m in moves.take(40)) {
 			p.make(m)
 			map[key(p)]?.let { found = it }
+		}
+		// система засчитывается, если все её ходы сыграны подряд первыми ходами этой стороны
+		val uci = moves.map { ru.cersat.chessics.chess.M.uci(it) }
+		for (o in list!!) {
+			if (!o.isSystem) continue
+			for (c in 0..1) {
+				val sys = o.system(c) ?: continue
+				val mine = uci.filterIndexed { i, _ -> i % 2 == c }
+				if (mine.size >= sys.size && mine.subList(0, sys.size) == sys) return o
+			}
 		}
 		return found
 	}
