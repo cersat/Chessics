@@ -27,7 +27,7 @@ object WidgetSetup {
 
 	// запуск игры из виджета
 	fun launch(a: MainActivity, widgetId: Int) {
-		val o = load(a, widgetId) ?: run { a.toast("Виджет не настроен — удали его и добавь заново"); return }
+		val o = load(a, widgetId) ?: run { a.toast("Виджет не настроен — нажми на него ещё раз"); return }
 		when (o.optString("type")) {
 			"setup" -> a.push(GameScreen(a, SetupScreen.configFrom(o), null))
 			"four" -> {

@@ -258,9 +258,9 @@ class LaunchWidget : AppWidgetProvider() {
 			val left = u * 0.9f
 			val maxW = fw - left - u * 0.15f
 			fun fit(s: String): String { var t = s; while (t.length > 3 && p.measureText(t) > maxW) t = t.dropLast(2) + "…"; return t }
-			c.drawText(fit(o?.optString("title") ?: "Не настроен"), left, cy - u * 0.02f, p)
+			c.drawText(fit(o?.optString("title") ?: "Быстрый старт"), left, cy - u * 0.02f, p)
 			p.isFakeBoldText = false; p.textSize = u * 0.14f
-			c.drawText(fit(o?.optString("subtitle") ?: "удали и добавь виджет заново"), left, cy + u * 0.2f, p)
+			c.drawText(fit(o?.optString("subtitle") ?: "нажми, чтобы выбрать игру"), left, cy + u * 0.2f, p)
 			return bmp
 		}
 
@@ -269,10 +269,13 @@ class LaunchWidget : AppWidgetProvider() {
 				val (w, h) = Widgets.sizePx(ctx, m, id, 250, 110)
 				val v = RemoteViews(ctx.packageName, R.layout.widget_image)
 				v.setImageViewBitmap(R.id.widget_img, render(ctx, id, w, h))
-				val i = Intent(ctx, MainActivity::class.java).setAction("ru.cersat.chessics.LAUNCH")
+				// не настроен — нажатие открывает выбор игры, настроен — сразу запускает её
+				val configured = Store.get(ctx).str("launch_$id", "").isNotEmpty()
+				val i = (if (configured) Intent(ctx, MainActivity::class.java).setAction("ru.cersat.chessics.LAUNCH").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+					else Intent(ctx, ru.cersat.chessics.ui.WidgetConfigActivity::class.java).setAction(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE))
 					.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
 					.setData(android.net.Uri.parse("chessics://launch/$id"))
-					.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+					.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 				v.setOnClickPendingIntent(R.id.widget_img, PendingIntent.getActivity(ctx, 1000 + id, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
 				m.updateAppWidget(id, v)
 			}
