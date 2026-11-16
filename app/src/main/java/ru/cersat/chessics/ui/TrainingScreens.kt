@@ -149,7 +149,7 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 	private val sans = ArrayList<String>()
 	private val sys = o.system(color) // для системы — только свои ходы
 	private var mine = 0 // сколько своих ходов системы уже сделано
-	private val bot = ru.cersat.chessics.bots.AlgoBot(3)
+	private val bot = ru.cersat.chessics.bots.MaterialBot(3)
 	private fun expectedMove(): Int = if (sys != null) (if (mine < sys.size) pos.parseUci(sys[mine]) else 0) else pos.parseUci(o.moves[step])
 	private fun lineOver() = if (sys != null) mine >= sys.size else step >= o.moves.size
 
@@ -191,7 +191,7 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 
 	private fun restart() {
 		while (step > 0) { pos.unmake(); step-- }
-		sans.clear(); done = false; mistakes = 0; busy = false; mine = 0
+		sans.clear(); done = false; mistakes = 0; busy = false; mine = 0; blocked = false; gen++
 		board.markSquare = -1
 		board.setPosition(pos.copy())
 		update(null)
@@ -200,7 +200,7 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 
 	private fun play(m: Int) {
 		val cap = pos.capturedBy(m) != 0
-		sans.add(San.of(pos, m, true))
+		sans.add(San.of(pos, m, !a.store.flag("sanEn", false)))
 		pos.make(m); step++
 		Sounds.play(a, Sounds.forMove(cap, M.isCastle(m), pos.inCheck()))
 		board.setPosition(pos.copy(), m, true)
@@ -210,8 +210,26 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 		if (done) return
 		if (lineOver()) { finished(); return }
 		if (pos.side != color) {
-			// в системе соперник ходит как бот «Алгоритм», в обычной линии — по теории
-			val m = if (sys != null) bot.pick(pos.copy(), step) { false } else pos.parseUci(o.moves[step])
+			// в системе соперник ходит как бот «Материал 3» (считается в фоне), в обычной линии — по теории
+			if (sys != null) {
+				busy = true
+				update("Соперник думает…")
+				val p = pos.copy(); val ply = step; val g = gen
+				BotRunner.exec.execute {
+					val m = bot.pick(p, ply) { g != gen }
+					BotRunner.main.post {
+						if (g != gen) return@post
+						busy = false
+						if (m == 0) { finished(); return@post }
+						play(m)
+						if (lineOver()) { finished(); return@post }
+						if (expectedMove() == 0) { blocked = true; finished(); return@post }
+						update(null)
+					}
+				}
+				return
+			}
+			val m = pos.parseUci(o.moves[step])
 			if (m == 0) { finished(); return }
 			play(m)
 			if (lineOver()) { finished(); return }
@@ -222,6 +240,7 @@ class OpeningTrainerScreen(a: MainActivity, private val o: Openings.Opening, pri
 	}
 
 	private var blocked = false
+	private var gen = 0 // при «Заново» ответ бота от старой попытки выбрасывается
 
 	private fun onMove(m0: Int) {
 		var m = m0

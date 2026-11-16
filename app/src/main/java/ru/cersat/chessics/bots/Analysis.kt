@@ -65,18 +65,18 @@ object Judge {
 	}
 
 	// Мгновенная оценка одного хода во время партии (для анимации бриллианта)
-	fun judgeLive(ctx: Context, startFen: String, uciBefore: String, before: Position, m: Int, c960: Boolean, done: (MoveClass?) -> Unit) {
+	fun judgeLive(ctx: Context, startFen: String, uciBefore: String, before: Position, m: Int, variant: Int, done: (MoveClass?) -> Unit) {
 		val main = Handler(Looper.getMainLooper())
-		val e = Stockfish.analysis
+		val e = Stockfish.analysis(variant)
 		e.exec.execute {
-			val lines = e.analyse(ctx, startFen, uciBefore, before.side == P.WHITE, "movetime 350", 2, c960)
+			val lines = e.analyse(ctx, startFen, uciBefore, before.side == P.WHITE, "movetime 350", 2, variant)
 			val after = before.copy().also { it.make(m) }
 			val st = Rules.status(after)
 			val afterScore = when (st.outcome) {
 				Outcome.WHITE_WINS -> 10000
 				Outcome.BLACK_WINS -> -10000
 				Outcome.DRAW -> 0
-				else -> e.analyse(ctx, startFen, (uciBefore + " " + M.uci(m)).trim(), after.side == P.WHITE, "movetime 350", 1, c960)?.firstOrNull()?.score
+				else -> e.analyse(ctx, startFen, (uciBefore + " " + M.uci(m)).trim(), after.side == P.WHITE, "movetime 350", 1, variant)?.firstOrNull()?.score
 			}
 			val cls = if (lines == null || afterScore == null) null else classify(before, m, lines.getOrNull(0), lines.getOrNull(1), afterScore)
 			main.post { done(cls) }
@@ -86,16 +86,23 @@ object Judge {
 
 // Разбор партии в отдельном процессе и потоке; результат кэшируется, чтобы можно было уйти с экрана
 object Analyzer {
-	class Result(val evals: IntArray, val best: Array<String>, val classes: Array<MoveClass?>)
+	// count — сколько позиций уже посчитано (с начала партии). Пока count < evals.size, результат частичный:
+	// оценки и типы ходов для первых ходов уже можно смотреть.
+	class Result(val evals: IntArray, val best: Array<String>, val classes: Array<MoveClass?>, val count: Int) {
+		val complete get() = count >= evals.size
+		fun hasEval(i: Int) = i < count
+		fun hasClass(i: Int) = i + 1 < count
+	}
 
 	private val cache = HashMap<String, Result>()
+	private val partial = HashMap<String, Result>()
 	private val progress = HashMap<String, Int>()
 	private val listeners = HashMap<String, MutableList<() -> Unit>>()
 	private val failed = HashMap<String, String>()
 	private val main = Handler(Looper.getMainLooper())
 
 	fun key(startFen: String, uci: String, variant: Int = 0) = "$variant|$startFen|$uci"
-	fun result(k: String) = cache[k]
+	fun result(k: String) = cache[k] ?: partial[k]
 	fun progress(k: String) = progress[k]
 	fun error(k: String) = failed[k]
 
@@ -105,12 +112,11 @@ object Analyzer {
 
 	fun start(ctx: Context, startFen: String, uci: String, variant: Int = 0) {
 		val k = key(startFen, uci, variant)
-		val c960 = variant == ru.cersat.chessics.chess.V.CHESS960
 		if (cache.containsKey(k) || progress.containsKey(k)) return
 		failed.remove(k)
 		progress[k] = 0
 		val app = ctx.applicationContext
-		val e = Stockfish.analysis
+		val e = Stockfish.analysis(variant)
 		e.exec.execute {
 			val game = GameRecord.fromUci(startFen, uci, variant)
 			val n = game.moves.size
@@ -118,15 +124,16 @@ object Analyzer {
 			val evals = IntArray(n + 1)
 			val best = Array(n + 1) { "" }
 			val lines = arrayOfNulls<List<Engine.Line>>(n + 1)
+			val classes = arrayOfNulls<MoveClass>(n)
 			for (i in 0..n) {
 				val p = game.positionAt(i)
 				val st = Rules.status(p)
 				if (st.outcome != Outcome.NONE) {
 					evals[i] = when (st.outcome) { Outcome.WHITE_WINS -> 10000; Outcome.BLACK_WINS -> -10000; else -> 0 }
 				} else {
-					val an = e.analyse(app, startFen, uciList.take(i).joinToString(" "), p.side == P.WHITE, "movetime 250", 2, c960)
+					val an = e.analyse(app, startFen, uciList.take(i).joinToString(" "), p.side == P.WHITE, "movetime 250", 2, variant)
 					if (an == null || an.isEmpty()) {
-						main.post { progress.remove(k); failed[k] = e.lastError ?: "Stockfish не ответил" }
+						main.post { progress.remove(k); partial.remove(k); failed[k] = e.lastError ?: "Stockfish не ответил" }
 						notify(k)
 						return@execute
 					}
@@ -134,16 +141,15 @@ object Analyzer {
 					evals[i] = an[0].score
 					best[i] = an[0].move
 				}
-				main.post { progress[k] = i + 1 }
+				// тип предыдущего хода известен, как только посчитана позиция после него
+				if (i > 0) classes[i - 1] = Judge.classify(game.positionAt(i - 1), game.moves[i - 1], lines[i - 1]?.getOrNull(0), lines[i - 1]?.getOrNull(1), evals[i])
+				val snap = Result(evals.copyOf(), best.copyOf(), classes.copyOf(), i + 1)
+				main.post {
+					progress[k] = i + 1
+					if (snap.complete) { cache[k] = snap; partial.remove(k); progress.remove(k) } else partial[k] = snap
+				}
 				notify(k)
 			}
-			val classes = arrayOfNulls<MoveClass>(n)
-			for (i in 0 until n) {
-				classes[i] = Judge.classify(game.positionAt(i), game.moves[i], lines[i]?.getOrNull(0), lines[i]?.getOrNull(1), evals[i + 1])
-			}
-			val r = Result(evals, best, classes)
-			main.post { cache[k] = r; progress.remove(k) }
-			notify(k)
 		}
 	}
 }

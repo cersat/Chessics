@@ -31,8 +31,6 @@ data class GameConfig(
 	val variant: Int = V.STANDARD,
 	val training: String = "" // id позиции тренажёра эндшпиля
 ) {
-	// Stockfish знает только обычные шахматы и Chess960
-	val stockfishOk get() = variant == V.STANDARD || variant == V.CHESS960
 	val hasClock get() = minutes > 0
 	val hvh get() = white.isHuman && black.isHuman
 	val remote get() = white.kind == Player.Kind.REMOTE || black.kind == Player.Kind.REMOTE
@@ -101,6 +99,9 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		})
 		box.addView(modeCard("🌐", "Онлайн · Lichess", "Живые соперники, вызов друга, Stockfish на сервере lichess. Нужен свой аккаунт") {
 			a.push(LichessScreen(a))
+		})
+		box.addView(modeCard("🎨", "Шахматы на четверых", "Две команды на доске 14×14: люди и боты в любом составе") {
+			a.push(FourSetupScreen(a))
 		})
 		box.addView(modeCard("📡", "По Wi-Fi или Bluetooth", "Партия между двумя телефонами рядом, без интернета") {
 			a.push(LanScreen(a))
@@ -217,7 +218,7 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 	}
 }
 
-class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
+class SetupScreen(a: MainActivity, private val mode: Mode, private val widgetId: Int = -1) : Screen(a) {
 	enum class Mode { BOT, HVH, CUSTOM }
 
 	private val st = a.store
@@ -228,9 +229,6 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 	private var white = Player.decode(st.str("setupW", "HUMAN:0"))
 	private var black = Player.decode(st.str("setupB", "MATERIAL:3"))
 	private var variant = st.str("setupVariant", "0").toInt()
-	private val sfOk get() = variant == V.STANDARD || variant == V.CHESS960
-
-	private fun fixPlayer(p: Player) = if (!sfOk && p.kind == Player.Kind.STOCKFISH) Player(Player.Kind.MATERIAL, 3) else p
 
 	override fun build(): View {
 		val box = ui.col(16, 14)
@@ -240,11 +238,11 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 			Mode.CUSTOM -> "Своя партия"
 		})))
 		val vc = ui.col(0, 8)
-		vc.addView(ui.chips(V.NAMES.mapIndexed { i, n -> n to (i == variant) }, 4) { variant = it; bot = fixPlayer(bot); white = fixPlayer(white); black = fixPlayer(black); a.refresh() })
+		vc.addView(ui.chips(V.NAMES.mapIndexed { i, n -> n to (i == variant) }, 4) { variant = it; a.refresh() })
 		vc.addView(ui.sub(when (variant) {
 			V.CHESS960 -> "Фигуры на первой линии расставлены случайно (одна из 960 позиций), рокировка — как в Chess960: нажми королём на свою ладью."
-			V.THREE_CHECK -> "Побеждает тот, кто первым объявит три шаха (или поставит мат). Stockfish в этот вариант не играет — только наши боты."
-			V.KOTH -> "Побеждает тот, чей король первым дойдёт до центра (d4, e4, d5, e5), или мат. Stockfish в этот вариант не играет — только наши боты."
+			V.THREE_CHECK -> "Побеждает тот, кто первым объявит три шаха (или поставит мат). Stockfish здесь — это Fairy-Stockfish (до 2850 Эло)."
+			V.KOTH -> "Побеждает тот, чей король первым дойдёт до центра (d4, e4, d5, e5), или мат. Stockfish здесь — это Fairy-Stockfish (до 2850 Эло)."
 			else -> "Обычные шахматы."
 		}))
 		box.addView(section("Вариант", vc))
@@ -268,7 +266,7 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 		}
 		val clocks = GameConfig.CLOCKS.mapIndexed { i, (m, inc) -> GameConfig.clockLabel(m, inc) to (i == clock) }
 		box.addView(section("Контроль времени", ui.chips(clocks, 4) { clock = it; a.refresh() }))
-		box.addView(ui.button("Начать партию") { start() })
+		box.addView(ui.button(if (widgetId >= 0) "📌 Поставить в виджет" else "Начать партию") { start() })
 		return ui.scroll(box)
 	}
 
@@ -284,7 +282,7 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 		val box = ui.col(0, 10)
 		val fams = ArrayList<Pair<String, Player.Kind>>()
 		if (allowHuman) fams.add("Человек" to Player.Kind.HUMAN)
-		if (sfOk) fams.add("Stockfish" to Player.Kind.STOCKFISH)
+		fams.add("Stockfish" to Player.Kind.STOCKFISH)
 		fams.add("Материал" to Player.Kind.MATERIAL)
 		fams.add("Алгоритм" to Player.Kind.ALGO)
 		fams.add("Случайный" to Player.Kind.RANDOM)
@@ -301,7 +299,7 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 			Player.Kind.STOCKFISH -> {
 				val lv = Player.SF_LEVELS
 				box.addView(ui.chips(lv.map { (if (it == 0) "MAX" else "$it") to (it == cur.level) }, 3) { onChange(Player(Player.Kind.STOCKFISH, lv[it])) })
-				box.addView(ui.sub("Настоящий Stockfish 17.1 на телефоне. Уровни — его встроенная настройка силы UCI_Elo; MAX — без ограничений (≈3500)."))
+				box.addView(ui.sub("Движки работают прямо на телефоне. От 1350 — Stockfish 17.1, MAX — без ограничений (≈3500). 500–1150, а также «Три шаха» и «Царь горы» — Fairy-Stockfish 14. Уровни — встроенная настройка силы UCI_Elo."))
 			}
 			Player.Kind.MATERIAL -> {
 				box.addView(ui.chips((1..8).map { "Глубина $it" to (it == cur.level) }, 4) { onChange(Player(Player.Kind.MATERIAL, it + 1)) })
@@ -319,22 +317,43 @@ class SetupScreen(a: MainActivity, private val mode: Mode) : Screen(a) {
 	}
 
 	private fun start() {
-		val (m, inc) = GameConfig.CLOCKS[clock]
 		st.setStr("setupClock_$mode", "$clock")
 		st.setStr("setupVariant", "$variant")
-		val fen = if (variant == V.CHESS960) V.random960() else Position.START
-		val cfg = when (mode) {
-			Mode.BOT -> {
-				st.setStr("setupBot", bot.encode()); st.setStr("setupColor", "$color")
-				val humanWhite = when (color) { 0 -> true; 1 -> false; else -> Math.random() < 0.5 }
-				if (humanWhite) GameConfig(Player.HUMAN, bot, m, inc, false, fen, variant) else GameConfig(bot, Player.HUMAN, m, inc, false, fen, variant)
-			}
-			Mode.HVH -> { st.setFlag("setupF2F", f2f); GameConfig(Player.HUMAN, Player.HUMAN, m, inc, f2f, fen, variant) }
-			Mode.CUSTOM -> {
-				st.setStr("setupW", white.encode()); st.setStr("setupB", black.encode())
-				GameConfig(white, black, m, inc, false, fen, variant)
+		when (mode) {
+			Mode.BOT -> { st.setStr("setupBot", bot.encode()); st.setStr("setupColor", "$color") }
+			Mode.HVH -> st.setFlag("setupF2F", f2f)
+			Mode.CUSTOM -> { st.setStr("setupW", white.encode()); st.setStr("setupB", black.encode()) }
+		}
+		val o = JSONObject().put("type", "setup").put("mode", mode.name).put("bot", bot.encode()).put("color", color).put("clock", clock)
+			.put("f2f", f2f).put("w", white.encode()).put("b", black.encode()).put("variant", variant)
+		if (widgetId >= 0) {
+			val (m, inc) = GameConfig.CLOCKS[clock]
+			val title = when (mode) { Mode.BOT -> bot.shortName; Mode.HVH -> "Вдвоём"; Mode.CUSTOM -> "${white.shortName} — ${black.shortName}" }
+			val parts = ArrayList<String>()
+			if (mode == Mode.BOT) parts.add(arrayOf("белыми", "чёрными", "случайный цвет")[color])
+			parts.add(GameConfig.clockLabel(m, inc))
+			if (variant != V.STANDARD) parts.add(V.NAMES[variant])
+			WidgetSetup.save(a, widgetId, o, title, parts.joinToString(" · "))
+			return
+		}
+		a.replace(GameScreen(a, configFrom(o), null))
+	}
+
+	companion object {
+		// Настройки → партия. Цвет «случайно» и расстановка Chess960 выбираются заново при каждом запуске.
+		fun configFrom(o: JSONObject): GameConfig {
+			val (m, inc) = GameConfig.CLOCKS[o.optInt("clock").coerceIn(0, GameConfig.CLOCKS.size - 1)]
+			val variant = o.optInt("variant")
+			val fen = if (variant == V.CHESS960) V.random960() else Position.START
+			return when (o.optString("mode")) {
+				"HVH" -> GameConfig(Player.HUMAN, Player.HUMAN, m, inc, o.optBoolean("f2f", true), fen, variant)
+				"CUSTOM" -> GameConfig(Player.decode(o.optString("w")), Player.decode(o.optString("b")), m, inc, false, fen, variant)
+				else -> {
+					val bot = Player.decode(o.optString("bot"))
+					val humanWhite = when (o.optInt("color")) { 0 -> true; 1 -> false; else -> Math.random() < 0.5 }
+					if (humanWhite) GameConfig(Player.HUMAN, bot, m, inc, false, fen, variant) else GameConfig(bot, Player.HUMAN, m, inc, false, fen, variant)
+				}
 			}
 		}
-		a.replace(GameScreen(a, cfg, null))
 	}
 }

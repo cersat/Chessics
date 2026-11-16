@@ -334,7 +334,6 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 
 	private val game = GameRecord.fromUci(startFen, uci, variant)
 	private val key = Analyzer.key(startFen, uci, variant)
-	private val sfOk = variant == ru.cersat.chessics.chess.V.STANDARD || variant == ru.cersat.chessics.chess.V.CHESS960
 	private var ply = 0
 	private val board = BoardView(a)
 	private val graph = EvalGraph(a)
@@ -364,7 +363,7 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 		box.addView(list, ui.lp())
 		Analyzer.unlisten(key, listener)
 		Analyzer.listen(key, listener)
-		if (sfOk) Analyzer.start(a, startFen, uci, variant)
+		Analyzer.start(a, startFen, uci, variant)
 		show(false)
 		return ui.scroll(box)
 	}
@@ -388,29 +387,30 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 		board.setPosition(p, last)
 		if (r == null) {
 			val err = Analyzer.error(key)
-			info.text = if (!sfOk) "Stockfish не знает правил варианта «${ru.cersat.chessics.chess.V.NAMES[variant]}», поэтому разбора нет — можно только пролистать ходы."
-				else err?.let { "Анализ недоступен: $it" } ?: "Stockfish анализирует в фоне… ${Analyzer.progress(key) ?: 0} / ${game.moves.size + 1}"
+			info.text = err?.let { "Анализ недоступен: $it" } ?: "Stockfish анализирует в фоне… ${Analyzer.progress(key) ?: 0} / ${game.moves.size + 1}"
 			graph.values = emptyList()
 			if (list.childCount == 0) buildList(null)
 			return
 		}
-		graph.values = r.evals.toList()
-		graph.cursor = ply
-		val cls = if (ply > 0) r.classes[ply - 1] else null
+		graph.values = r.evals.toList().take(r.count)
+		graph.cursor = if (r.hasEval(ply)) ply else -1
+		val cls = if (ply > 0 && r.hasClass(ply - 1)) r.classes[ply - 1] else null
 		if (cls != null && last != 0) {
 			if (animate && (cls == MoveClass.BRILLIANT || cls == MoveClass.GREAT)) board.celebrate(M.to(last), cls)
 			else { board.badgeSq = M.to(last); board.badgeClass = cls }
 		}
-		if (ply < r.best.size && r.best[ply].isNotEmpty() && ply < game.moves.size) board.hintMove = p.parseUci(r.best[ply])
+		if (r.hasEval(ply) && r.best[ply].isNotEmpty() && ply < game.moves.size) board.hintMove = p.parseUci(r.best[ply])
 		board.invalidate()
-		val e = r.evals[ply]
-		val evalTxt = if (kotlin.math.abs(e) >= 9000) "мат" else String.format(java.util.Locale.US, "%+.2f", e / 100.0)
-		var t = "Оценка: $evalTxt"
-		if (cls != null) t += " · ${game.sanRu[ply - 1]} ${cls.symbol} — ${cls.title}"
-		if (ply < r.best.size && r.best[ply].isNotEmpty()) {
+		var t = if (r.hasEval(ply)) {
+			val e = r.evals[ply]
+			"Оценка: " + if (kotlin.math.abs(e) >= 9000) "мат" else String.format(java.util.Locale.US, "%+.2f", e / 100.0)
+		} else "Эта позиция ещё считается…"
+		if (cls != null) t += " · ${game.san(ply - 1, a.store.flag("sanEn", false))} ${cls.symbol} — ${cls.title}"
+		if (r.hasEval(ply) && r.best[ply].isNotEmpty()) {
 			val bm = p.parseUci(r.best[ply])
-			if (bm != 0) t += "\nЛучший ход здесь: ${San.of(p, bm, true)} (синяя стрелка)"
+			if (bm != 0) t += "\nЛучший ход здесь: ${San.of(p, bm, !a.store.flag("sanEn", false))} (синяя стрелка)"
 		}
+		if (!r.complete) t += "\nStockfish досчитывает в фоне: ${r.count} / ${game.moves.size + 1}"
 		info.text = t
 		buildList(r)
 	}
@@ -422,7 +422,7 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 				var acc = 0.0; var cnt = 0
 				val counts = HashMap<MoveClass, Int>()
 				for (i in game.moves.indices) {
-					if (game.positionAt(i).side != side) continue
+					if (!r.hasClass(i) || game.positionAt(i).side != side) continue
 					val sign = if (side == P.WHITE) 1 else -1
 					val l = maxOf(0.0, ru.cersat.chessics.bots.Judge.winPct(r.evals[i] * sign) - ru.cersat.chessics.bots.Judge.winPct(r.evals[i + 1] * sign))
 					acc += (103.1668 * Math.exp(-0.04354 * l) - 3.1669).coerceIn(0.0, 100.0); cnt++
@@ -454,9 +454,9 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 				row.addView(ui.text(if (white) "$num." else "$num…", 13f, ui.t.sub), LinearLayout.LayoutParams(ui.dp(40), ViewGroup.LayoutParams.WRAP_CONTENT))
 				list.addView(row)
 			}
-			val cls = r?.classes?.getOrNull(i)
+			val cls = if (r != null && r.hasClass(i)) r.classes[i] else null
 			val sel = i + 1 == ply
-			val tv = ui.text(game.sanRu[i] + (cls?.let { " " + it.symbol } ?: ""), 14f,
+			val tv = ui.text(game.san(i, a.store.flag("sanEn", false)) + (cls?.let { " " + it.symbol } ?: ""), 14f,
 				if (sel) Ui.contrast(ui.t.accent) else (cls?.takeIf { it in listOf(MoveClass.BRILLIANT, MoveClass.GREAT, MoveClass.INACCURACY, MoveClass.MISTAKE, MoveClass.BLUNDER) }?.color ?: ui.t.text), true)
 			tv.setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
 			val target = i + 1

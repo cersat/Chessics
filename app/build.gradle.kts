@@ -15,8 +15,8 @@ android {
 		applicationId = "ru.cersat.chessics"
 		minSdk = 26
 		targetSdk = 36
-		versionCode = 8
-		versionName = "1.0.7"
+		versionCode = 9
+		versionName = "1.1.0"
 		ndk { abiFilters += listOf("arm64-v8a") }
 	}
 
@@ -142,4 +142,39 @@ val buildStockfish by tasks.registering {
 	}
 }
 
-tasks.named("preBuild") { dependsOn(downloadNets, buildStockfish) }
+// Fairy-Stockfish 14 из подмодуля external/fairy-stockfish: низкие уровни (от 500 Эло) и варианты.
+// Нейросети ему не нужны — работает на классической оценке.
+val fsfSrc = rootProject.file("external/fairy-stockfish/src")
+val fsfOut = layout.buildDirectory.dir("stockfish/jniLibs/arm64-v8a/libfairy.so")
+
+val buildFairy by tasks.registering {
+	inputs.dir(fsfSrc)
+	outputs.file(fsfOut)
+	doLast {
+		check(File(fsfSrc, "Makefile").exists()) { "Нет исходников Fairy-Stockfish: выполни git submodule update --init" }
+		val host = if (System.getProperty("os.name").lowercase().contains("mac")) "darwin-x86_64" else "linux-x86_64"
+		val bin = File(ndkDir.get().asFile, "toolchains/llvm/prebuilt/$host/bin")
+		val work = layout.buildDirectory.dir("stockfish/work/fairy").get().asFile
+		work.deleteRecursively()
+		fsfSrc.copyRecursively(work)
+		// флаг старого clang, которого нет в NDK 28
+		val mk = File(work, "Makefile")
+		mk.writeText(mk.readText().replace("-fexperimental-new-pass-manager", ""))
+		fun run(vararg cmd: String) {
+			val pb = ProcessBuilder(*cmd).directory(work).redirectErrorStream(true)
+			pb.environment()["PATH"] = bin.absolutePath + File.pathSeparator + System.getenv("PATH")
+			val p = pb.start()
+			val log = ArrayList<String>()
+			p.inputStream.bufferedReader().forEachLine { logger.info(it); log.add(it) }
+			check(p.waitFor() == 0) { "Ошибка: ${cmd.joinToString(" ")}\n" + log.takeLast(40).joinToString("\n") }
+		}
+		logger.lifecycle("Собираю Fairy-Stockfish")
+		run("make", "-j${Runtime.getRuntime().availableProcessors()}", "build", "ARCH=armv8", "COMP=ndk")
+		run(File(bin, "llvm-strip").absolutePath, "stockfish")
+		val out = fsfOut.get().asFile
+		out.parentFile.mkdirs()
+		File(work, "stockfish").copyTo(out, true)
+	}
+}
+
+tasks.named("preBuild") { dependsOn(downloadNets, buildStockfish, buildFairy) }

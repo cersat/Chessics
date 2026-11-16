@@ -3,4 +3,5 @@
 	<string name="app_name">Chessics</string>
 	<string name="widget_streak">Серия Chessics</string>
 	<string name="widget_puzzle">Задача дня</string>
+	<string name="widget_launch">Быстрый старт</string>
 </resources>

@@ -10,7 +10,7 @@ import java.util.concurrent.Executors
 
 // Один процесс Stockfish 17.1 (UCI) со своим потоком.
 // Бинарник лежит в nativeLibraryDir, нейросети копируются из assets в filesDir при первом запуске.
-class Engine(private val name: String, private val threads: Int) {
+class Engine(private val name: String, private val threads: Int, val fairy: Boolean = false) {
 	private var proc: Process? = null
 	private var reader: BufferedReader? = null
 	private var writer: OutputStreamWriter? = null
@@ -19,6 +19,7 @@ class Engine(private val name: String, private val threads: Int) {
 	private var curElo = -1
 	private var curMultiPv = 1
 	private var cur960 = false
+	private var curVariant = "chess"
 	@Volatile var lastError: String? = null
 		private set
 
@@ -48,8 +49,7 @@ class Engine(private val name: String, private val threads: Int) {
 		synchronized(lock) {
 			if (proc?.isAlive == true) return true
 			try {
-				val bin = Nets.binary(ctx) ?: run { lastError = "Stockfish не найден (нужен телефон arm64)"; return false }
-				val (big, small) = Nets.files(ctx)
+				val bin = (if (fairy) Nets.fairy(ctx) else Nets.binary(ctx)) ?: run { lastError = "Движок не найден (нужен телефон arm64)"; return false }
 				val p = ProcessBuilder(bin.absolutePath).redirectErrorStream(true).start()
 				proc = p
 				reader = BufferedReader(InputStreamReader(p.inputStream))
@@ -58,11 +58,15 @@ class Engine(private val name: String, private val threads: Int) {
 				readUntil("uciok") ?: throw IllegalStateException("нет uciok")
 				send("setoption name Threads value $threads")
 				send("setoption name Hash value 32")
-				send("setoption name EvalFile value ${big.absolutePath}")
-				send("setoption name EvalFileSmall value ${small.absolutePath}")
+				if (fairy) send("setoption name Use NNUE value false")
+				else {
+					val (big, small) = Nets.files(ctx)
+					send("setoption name EvalFile value ${big.absolutePath}")
+					send("setoption name EvalFileSmall value ${small.absolutePath}")
+				}
 				send("isready")
 				readUntil("readyok") ?: throw IllegalStateException("нет readyok")
-				curElo = -1; curMultiPv = 1; cur960 = false
+				curElo = -1; curMultiPv = 1; cur960 = false; curVariant = "chess"
 				lastError = null
 				return true
 			} catch (e: Exception) {
@@ -73,7 +77,9 @@ class Engine(private val name: String, private val threads: Int) {
 		}
 	}
 
-	private fun setElo(elo: Int) {
+	private fun setElo(elo0: Int) {
+		// у Fairy UCI_Elo от 500 до 2850
+		val elo = if (fairy && elo0 > 0) elo0.coerceIn(500, 2850) else elo0
 		if (elo == curElo) return
 		if (elo <= 0) send("setoption name UCI_LimitStrength value false")
 		else {
@@ -83,10 +89,22 @@ class Engine(private val name: String, private val threads: Int) {
 		curElo = elo
 	}
 
-	private fun set960(v: Boolean) {
-		if (v == cur960) return
-		send("setoption name UCI_Chess960 value $v")
-		cur960 = v
+	// variant — номер из V: Chess960 через UCI_Chess960, Три шаха и Царь горы — только у Fairy
+	private fun setVariant(variant: Int) {
+		val c960 = variant == ru.cersat.chessics.chess.V.CHESS960
+		if (fairy) {
+			val v = when (variant) { ru.cersat.chessics.chess.V.THREE_CHECK -> "3check"; ru.cersat.chessics.chess.V.KOTH -> "kingofthehill"; else -> "chess" }
+			if (v != curVariant) { send("setoption name UCI_Variant value $v"); curVariant = v }
+		}
+		if (c960 != cur960) { send("setoption name UCI_Chess960 value $c960"); cur960 = c960 }
+	}
+
+	// В «Трёх шахах» Fairy ждёт в FEN счётчик оставшихся шахов
+	private fun engineFen(fen: String, variant: Int): String {
+		if (!fairy || variant != ru.cersat.chessics.chess.V.THREE_CHECK) return fen
+		val t = fen.trim().split(Regex("\\s+")).toMutableList()
+		if (t.size == 6) t.add(4, "3+3")
+		return t.joinToString(" ")
 	}
 
 	private fun setMultiPv(n: Int) {
@@ -95,18 +113,18 @@ class Engine(private val name: String, private val threads: Int) {
 		curMultiPv = n
 	}
 
-	private fun positionCmd(startFen: String, moves: String) =
-		"position fen $startFen" + if (moves.isNotBlank()) " moves $moves" else ""
+	private fun positionCmd(startFen: String, moves: String, variant: Int) =
+		"position fen ${engineFen(startFen, variant)}" + if (moves.isNotBlank()) " moves $moves" else ""
 
 	private fun fail(e: Exception) { lastError = e.message ?: e.toString(); proc?.destroy(); proc = null }
 
 	// Ход бота. elo <= 0 — полная сила.
-	fun bestMove(ctx: Context, startFen: String, moves: String, elo: Int, movetime: Int, c960: Boolean = false): String? {
+	fun bestMove(ctx: Context, startFen: String, moves: String, elo: Int, movetime: Int, variant: Int = 0): String? {
 		if (!start(ctx)) return null
 		synchronized(lock) {
 			return try {
-				setElo(elo); setMultiPv(1); set960(c960)
-				send(positionCmd(startFen, moves))
+				setElo(elo); setMultiPv(1); setVariant(variant)
+				send(positionCmd(startFen, moves, variant))
 				send("go movetime $movetime")
 				readUntil("bestmove")?.split(" ")?.getOrNull(1)?.takeIf { it != "(none)" }
 			} catch (e: Exception) { fail(e); null }
@@ -114,12 +132,12 @@ class Engine(private val name: String, private val threads: Int) {
 	}
 
 	// Анализ полной силой. go — «depth 3» или «movetime 300». Строки отсортированы от лучшей.
-	fun analyse(ctx: Context, startFen: String, moves: String, whiteToMove: Boolean, go: String, multipv: Int = 1, c960: Boolean = false): List<Line>? {
+	fun analyse(ctx: Context, startFen: String, moves: String, whiteToMove: Boolean, go: String, multipv: Int = 1, variant: Int = 0): List<Line>? {
 		if (!start(ctx)) return null
 		synchronized(lock) {
 			try {
-				setElo(0); setMultiPv(multipv); set960(c960)
-				send(positionCmd(startFen, moves))
+				setElo(0); setMultiPv(multipv); setVariant(variant)
+				send(positionCmd(startFen, moves, variant))
 				send("go $go")
 				val lines = arrayOfNulls<Line>(multipv)
 				val sign = if (whiteToMove) 1 else -1
@@ -171,6 +189,8 @@ object Nets {
 		File("/proc/cpuinfo").readText().contains("asimddp")
 	} catch (e: Exception) { false }
 
+	fun fairy(ctx: Context): File? = File(ctx.applicationInfo.nativeLibraryDir, "libfairy.so").takeIf { it.exists() }
+
 	fun binary(ctx: Context): File? {
 		val f = File(ctx.applicationInfo.nativeLibraryDir, if (hasDotProd()) "libstockfish_dp.so" else "libstockfish.so")
 		return if (f.exists()) f else null
@@ -191,12 +211,33 @@ object Nets {
 	}
 }
 
-// Три независимых процесса: ходы ботов и подсказки, полоса оценки, разбор партий
+// Stockfish 17.1 — обычные шахматы и Chess960 от 1350 Эло до полной силы.
+// Fairy-Stockfish 14 — низкие уровни (500–1150 Эло) и варианты, которых Stockfish не знает.
+// У каждого — три процесса: ходы ботов и подсказки, полоса оценки, разбор партий. Fairy запускается только при надобности.
 object Stockfish {
 	private val cores = Runtime.getRuntime().availableProcessors()
-	val play = Engine("play", maxOf(1, minOf(4, cores / 2)))
-	val bar = Engine("bar", 1)
-	val analysis = Engine("analysis", maxOf(1, minOf(2, cores / 4)))
+	private val sfPlay = Engine("play", maxOf(1, minOf(4, cores / 2)))
+	private val sfBar = Engine("bar", 1)
+	private val sfAnalysis = Engine("analysis", maxOf(1, minOf(2, cores / 4)))
+	private val fPlay = Engine("fplay", maxOf(1, minOf(4, cores / 2)), true)
+	private val fBar = Engine("fbar", 1, true)
+	private val fAnalysis = Engine("fanalysis", maxOf(1, minOf(2, cores / 4)), true)
+
+	const val SF_MIN_ELO = 1320
+
+	fun fairyVariant(variant: Int) = variant == ru.cersat.chessics.chess.V.THREE_CHECK || variant == ru.cersat.chessics.chess.V.KOTH
+
+	// для хода бота: Fairy — если вариант его или Эло ниже минимума Stockfish
+	fun play(variant: Int, elo: Int = 0): Engine = if (fairyVariant(variant) || (elo in 1 until SF_MIN_ELO)) fPlay else sfPlay
+	fun bar(variant: Int): Engine = if (fairyVariant(variant)) fBar else sfBar
+	fun analysis(variant: Int): Engine = if (fairyVariant(variant)) fAnalysis else sfAnalysis
+
+	// обычные шахматы — Stockfish
+	val play get() = sfPlay
+	val analysis get() = sfAnalysis
+
+	fun stopPlay() { sfPlay.stop(); fPlay.stop() }
+	fun newGame() { sfPlay.newGame(); fPlay.newGame() }
 }
 
 // Описание игрока: человек или бот
@@ -210,7 +251,7 @@ data class Player(val kind: Kind, val level: Int = 0) {
 		Kind.RANDOM -> "Случайный"
 		Kind.ALGO -> "Алгоритм · ${AlgoBot.LABELS[(level - 1).coerceIn(0, 4)]}"
 		Kind.MATERIAL -> "Материал · глубина $level"
-		Kind.STOCKFISH -> if (level <= 0) "Stockfish · полная сила" else "Stockfish $level"
+		Kind.STOCKFISH -> if (level <= 0) "Stockfish · полная сила" else if (level < Stockfish.SF_MIN_ELO) "Stockfish $level (Fairy)" else "Stockfish $level"
 		Kind.REMOTE -> "Соперник по сети"
 	}
 
@@ -237,7 +278,7 @@ data class Player(val kind: Kind, val level: Int = 0) {
 
 	companion object {
 		val HUMAN = Player(Kind.HUMAN)
-		val SF_LEVELS = intArrayOf(1350, 1500, 1700, 1900, 2100, 2400, 2700, 3000, 0)
+		val SF_LEVELS = intArrayOf(500, 800, 1000, 1150, 1350, 1500, 1700, 1900, 2100, 2400, 2700, 3000, 0)
 		fun decode(s: String): Player = try {
 			val (k, l) = s.split(":")
 			Player(Kind.valueOf(k), l.toInt())

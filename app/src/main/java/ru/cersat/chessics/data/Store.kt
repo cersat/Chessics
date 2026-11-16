@@ -154,6 +154,22 @@ class Store private constructor(private val ctx: Context) {
 		return r
 	}
 
+	// Шахматы на четверых: считается, если человек играет за одну команду, а в другой есть бот
+	fun fourFinished(win: Boolean, draw: Boolean, plies: Int): Reward {
+		val r = Reward()
+		inc("fourGames")
+		event("game")
+		if (win) { inc("fourWins"); event("win"); r.diamonds += 2; r.lines.add("Победа команды: +2 💎") }
+		else if (draw) r.lines.add("Ничья")
+		if (plies >= 12) markActive(r)
+		val rainbow = Shop.byId("wg_rainbow")?.req
+		if (win && rainbow != null && stat("fourWins") <= rainbow.target)
+			r.lines.add(if (rainbow.test(this)) "🌈 Открыт скин виджета «Радуга»!" else "🌈 До «Радуги»: ${rainbow.progress(this)}/${rainbow.target} побед")
+		checkAchievements(r)
+		addDiamonds(r.diamonds)
+		return r
+	}
+
 	// Партия по Wi-Fi или Bluetooth — награды как за онлайн
 	fun lanFinished(score: Double, plies: Int): Reward {
 		inc("lan")
@@ -367,10 +383,15 @@ class Store private constructor(private val ctx: Context) {
 	fun progressOf(a: Achievements.Ach) = a.progress(this)
 
 	// ---------- магазин ----------
-	fun owns(id: String) = Shop.byId(id)?.price == 0 || sp.getStringSet("owned", emptySet())!!.contains(id)
+	fun owns(id: String): Boolean {
+		val item = Shop.byId(id) ?: return false
+		item.req?.let { return it.test(this) } // предмет за достижение — условие проверяется каждый раз
+		return item.price == 0 || sp.getStringSet("owned", emptySet())!!.contains(id)
+	}
 
 	fun buy(item: Shop.Item): Boolean {
 		if (owns(item.id)) return true
+		if (item.req != null) return false
 		if (!spend(item.price)) return false
 		val o = sp.getStringSet("owned", emptySet())!!.toMutableSet()
 		o.add(item.id)
@@ -476,6 +497,7 @@ object Achievements {
 		Ach("op10", "Теоретик", "Выучить 10 дебютных линий", 30, 10) { it.stat("openings") },
 		Ach("goals20", "Целеустремлённый", "Выполнить 20 целей", 40, 20) { it.stat("goals") },
 		Ach("lan1", "По соседству", "Сыграть партию по Wi-Fi или Bluetooth", 15, 1) { it.stat("lan") },
+		Ach("four1", "Командный игрок", "Победить в шахматах на четверых", 20, 1) { it.stat("fourWins") },
 		Ach("gen5", "Генератор", "Решить 5 сгенерированных задач", 20, 5) { it.stat("genSolved") },
 		Ach("hvh5", "Живая доска", "Сыграть 5 партий на одном телефоне", 15, 5) { it.stat("hvh") },
 		Ach("shop5", "Коллекционер", "Купить 5 вещей в магазине", 30, 5) { it.stat("bought") }

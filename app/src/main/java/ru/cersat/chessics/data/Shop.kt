@@ -7,7 +7,17 @@ object Shop {
 
 	enum class Cat(val title: String) { THEME("Темы оформления"), BOARD("Доски"), PIECES("Фигуры"), SOUND("Звуки ходов"), WIDGET("Скины виджетов") }
 
-	open class Item(val id: String, val cat: Cat, val name: String, val price: Int)
+	// Условие получения предмета без алмазов. Проверяется каждый раз заново по статистике — отметка «получено» не хранится.
+	class Req(val text: String, val target: Int, val value: (Store) -> Int) {
+		fun test(s: Store) = value(s) >= target
+		fun progress(s: Store) = minOf(value(s), target)
+	}
+
+	open class Item(val id: String, val cat: Cat, val name: String, val price: Int) {
+		var req: Req? = null
+	}
+
+	private fun <T : Item> T.needs(text: String, target: Int, value: (Store) -> Int): T = apply { req = Req(text, target, value) }
 
 	// Тема оформления (всё тёмное)
 	class Theme(id: String, name: String, price: Int, val bg: Int, val card: Int, val card2: Int, val accent: Int, val text: Int, val sub: Int, val light: Boolean = false) :
@@ -33,7 +43,8 @@ object Shop {
 		Theme("th_sunset", "Закат", 80, c(0xFF1A1012), c(0xFF26171B), c(0xFF341F25), c(0xFFFF7A59), c(0xFFFFEDE8), c(0xFFC09A93)),
 		Theme("th_amethyst", "Аметист", 80, c(0xFF130F1C), c(0xFF1D172B), c(0xFF29203D), c(0xFFB77CFF), c(0xFFF3EDFF), c(0xFFA698C2)),
 		Theme("th_oled", "Полночь (OLED)", 100, c(0xFF000000), c(0xFF0E0E10), c(0xFF19191C), c(0xFFFFFFFF), c(0xFFFFFFFF), c(0xFF8A8A92)),
-		Theme("th_ruby", "Рубин", 120, c(0xFF170A0D), c(0xFF241015), c(0xFF33171E), c(0xFFFF3D6E), c(0xFFFFE9EE), c(0xFFC48E9A)),
+		Theme("th_ruby", "Рубин", 0, c(0xFF170A0D), c(0xFF241015), c(0xFF33171E), c(0xFFFF3D6E), c(0xFFFFE9EE), c(0xFFC48E9A))
+			.needs("Выучи 10 дебютных линий", 10) { it.stat("openings") },
 		Theme("th_day", "День (светлая)", 60, c(0xFFF3F4F7), c(0xFFFFFFFF), c(0xFFE6E8EE), c(0xFFE08A12), c(0xFF17191F), c(0xFF6B7280), true),
 		Theme("th_paper", "Бумага (светлая)", 80, c(0xFFF6F0E4), c(0xFFFFFBF3), c(0xFFEDE4D2), c(0xFF8B5E34), c(0xFF2B2118), c(0xFF7D6F5E), true),
 		Theme("th_mint", "Мята (светлая)", 80, c(0xFFEEF7F3), c(0xFFFFFFFF), c(0xFFDCEFE6), c(0xFF0E9F6E), c(0xFF10231B), c(0xFF5C7A6D), true),
@@ -47,12 +58,21 @@ object Shop {
 		Board("bd_marble", "Мрамор", 80, c(0xFFD9D9D9), c(0xFF8E8E8E), c(0x99E8C547), c(0xA0B0A040)),
 		Board("bd_sand", "Песок", 80, c(0xFFF4E3C1), c(0xFFD2A86A), c(0x99F2CC5A), c(0xA0C49A3C)),
 		Board("bd_night", "Ночь", 100, c(0xFF5F6B85), c(0xFF2E364A), c(0x995AA9E6), c(0xA04A7FB0)),
-		Board("bd_neon", "Неон", 120, c(0xFF3B2A5C), c(0xFF1B1430), c(0x9900E5FF), c(0xA0FF2BD6)),
+		Board("bd_neon", "Неон", 0, c(0xFF3B2A5C), c(0xFF1B1430), c(0x9900E5FF), c(0xA0FF2BD6))
+			.needs("Победи Stockfish 2100", 2100) { it.stat("sfBest") },
 		Board("bd_lava", "Лава", 150, c(0xFF6E3B32), c(0xFF2A1311), c(0x99FF8A00), c(0xA0FF4500))
 	)
 
 	val PIECES = listOf(
 		Pieces("pc_cburnett", "Классика", 0, "cburnett", "cburnett — Colin M.L. Burnett, GPLv2+"),
+		Pieces("pc_flat", "Плоские", 60, "flat", "Chessics — свой набор"),
+		Pieces("pc_pixel8", "Пиксели 8 бит", 90, "pixel8", "Chessics — свой набор"),
+		Pieces("pc_ghost", "Призраки", 0, "ghost", "Chessics — полупрозрачные фигуры с глазами")
+			.needs("Сыграй 3 бриллиантовых хода против ботов", 3) { it.stat("brilliant") },
+		Pieces("pc_neon", "Неон", 0, "neon", "Chessics — светящиеся контуры")
+			.needs("Набери 25 в штурме задач", 25) { it.stat("stormBest") },
+		Pieces("pc_glass", "Стекло", 0, "glass", "Chessics — стеклянные фигуры с бликом")
+			.needs("Пройди все позиции тренажёра эндшпиля", Endgames.ALL.size) { it.stat("endgames") },
 		Pieces("pc_merida", "Мерида", 100, "merida", "merida — Armando Hernandez Marroquin, GPLv2+"),
 		Pieces("pc_alpha", "Альфа", 80, "alpha", "alpha — Eric Bentzen, свободно для некоммерческого использования"),
 		Pieces("pc_chessnut", "Чесснат", 80, "chessnut", "chessnut — Alexis Luengas, Apache 2.0"),
@@ -86,7 +106,8 @@ object Shop {
 		Sound("sn_soft", "Мягкие", 50, 5, "Приглушённые, для ночной игры"),
 		Sound("sn_8bit", "8 бит", 70, 3, "Как в старой приставке"),
 		Sound("sn_glass", "Стекло", 90, 4, "Звонкие колокольчики"),
-		Sound("sn_space", "Космос", 120, 6, "Свипы и бипы")
+		Sound("sn_space", "Космос", 0, 6, "Свипы и бипы")
+			.needs("Продержи серию 30 дней", 30) { it.bestStreak }
 	)
 
 	// style: 0 — пламя, 1 — снежинка, 2 — молния, 3 — корона, 4 — минимал, 5 — радуга
@@ -97,8 +118,10 @@ object Shop {
 		Widget("wg_neon", "Неон", 90, c(0xFF2B0A3D), c(0xFF07020E), c(0xFF00F0FF), c(0xFFFF2BD6), 2),
 		Widget("wg_gold", "Золото", 150, c(0xFFFFD86B), c(0xFF9C6B00), c(0xFF2B1D00), c(0xFFFFF7D6), 3),
 		Widget("wg_minimal", "Минимал", 40, c(0xCC000000), c(0xCC000000), c(0xFFFFFFFF), c(0xFFBBBBBB), 4),
-		Widget("wg_rainbow", "Радуга", 200, c(0xFFFF5F6D), c(0xFF6A5BFF), c(0xFFFFFFFF), c(0xFFFFFFFF), 5),
-		Widget("wg_forest", "Лес", 70, c(0xFF2F7D4F), c(0xFF0E2A1B), c(0xFFE9FFF1), c(0xFFA6F4C5), 0)
+		Widget("wg_rainbow", "Радуга", 0, c(0xFFFF5F6D), c(0xFF6A5BFF), c(0xFFFFFFFF), c(0xFFFFFFFF), 5)
+			.needs("Победи 10 раз в шахматах на четверых", 10) { it.stat("fourWins") },
+		Widget("wg_forest", "Лес", 70, c(0xFF2F7D4F), c(0xFF0E2A1B), c(0xFFE9FFF1), c(0xFFA6F4C5), 0),
+		Widget("wg_clear", "Прозрачный", 30, c(0x00000000), c(0x00000000), c(0xFFFFFFFF), c(0xFFFFB347), 0)
 	)
 
 	fun items(cat: Cat): List<Item> = when (cat) {
@@ -120,9 +143,17 @@ object Shop {
 
 	fun byId(id: String): Item? = (THEMES + BOARDS + PIECES + SOUNDS + WIDGETS).firstOrNull { it.id == id }
 
-	fun theme(ctx: Context) = byId(Store.get(ctx).selected(Cat.THEME)) as? Theme ?: THEMES[0]
-	fun board(ctx: Context) = byId(Store.get(ctx).selected(Cat.BOARD)) as? Board ?: BOARDS[0]
-	fun pieces(ctx: Context) = (byId(Store.get(ctx).selected(Cat.PIECES)) as? Pieces)?.takeIf { it.set in installedSets } ?: PIECES[0]
-	fun sound(ctx: Context) = byId(Store.get(ctx).selected(Cat.SOUND)) as? Sound ?: SOUNDS[1]
-	fun widget(ctx: Context) = byId(Store.get(ctx).selected(Cat.WIDGET)) as? Widget ?: WIDGETS[0]
+	// Выбранный предмет применяется, только если он действительно есть (куплен или условие выполняется прямо сейчас)
+	private fun <T : Item> chosen(ctx: Context, cat: Cat): T? {
+		val st = Store.get(ctx)
+		val item = byId(st.selected(cat)) ?: return null
+		@Suppress("UNCHECKED_CAST")
+		return if (st.owns(item.id)) item as? T else null
+	}
+
+	fun theme(ctx: Context): Theme = chosen(ctx, Cat.THEME) ?: THEMES[0]
+	fun board(ctx: Context): Board = chosen(ctx, Cat.BOARD) ?: BOARDS[0]
+	fun pieces(ctx: Context): Pieces = chosen<Pieces>(ctx, Cat.PIECES)?.takeIf { it.set in installedSets } ?: PIECES[0]
+	fun sound(ctx: Context): Sound = chosen(ctx, Cat.SOUND) ?: SOUNDS[1]
+	fun widget(ctx: Context): Widget = chosen(ctx, Cat.WIDGET) ?: WIDGETS[0]
 }

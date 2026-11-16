@@ -23,7 +23,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class LichessScreen(a: MainActivity) : Screen(a) {
+class LichessScreen(a: MainActivity, private val auto: JSONObject? = null) : Screen(a) {
+	private var autoDone = false
 	private val st = a.store
 	private var events: Lichess.Stream? = null
 	private var seek: Lichess.Stream? = null
@@ -33,9 +34,8 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 	private var loadError: String? = null
 	private var loaded = false
 
-	private val clocks = listOf(10 to 0, 10 to 5, 15 to 10, 30 to 0, 30 to 20)
-	// Board API: блиц разрешён только в вызовах и против ИИ, пуля — нигде
-	private val challengeClocks = listOf(3 to 0, 3 to 2, 5 to 0, 5 to 3, 10 to 0, 10 to 5, 15 to 10, 30 to 0)
+	private val clocks = CLOCKS
+	private val challengeClocks = CHALLENGE_CLOCKS
 
 	override fun build(): View {
 		val box = ui.col(16, 14)
@@ -147,17 +147,12 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 		ai.addView(ui.space(10))
 		ai.addView(ui.button("Играть") {
 			val (m, inc) = challengeClocks[aiTc]
-			Lichess.exec.execute {
-				try {
-					val o = Lichess.call(a, "POST", "/api/challenge/ai", mapOf("level" to "$lvl", "clock.limit" to "${m * 60}", "clock.increment" to "$inc", "color" to "random", "variant" to vKey))
-					val id = o.optString("id")
-					BotRunner.main.post { if (opened.add(id)) a.push(OnlineGameScreen(a, id)) }
-				} catch (e: Exception) { BotRunner.main.post { a.toast("Lichess: ${e.message}") } }
-			}
+			startAi(lvl, m, inc, vKey)
 		})
 		box.addView(ai)
 		box.addView(ui.sub("Онлайн-победы тоже продлевают серию и дают алмазы.", 12f))
 		startEvents()
+		if (auto != null && !autoDone) BotRunner.main.post { runAuto() }
 		return ui.scroll(box)
 	}
 
@@ -267,11 +262,38 @@ class LichessScreen(a: MainActivity) : Screen(a) {
 		}
 	}
 
+	// запуск из виджета: сразу поиск соперника или игра со Stockfish lichess
+	private fun runAuto() {
+		val o = auto ?: return
+		if (autoDone) return
+		autoDone = true
+		if (Lichess.token(a).isEmpty()) { a.toast("Сначала войди в lichess — виджет запустит игру со следующего раза"); return }
+		val vKey = V.LICHESS[o.optInt("variant").coerceIn(0, V.LICHESS.size - 1)]
+		if (o.optString("type") == "liSeek") startSeek(clocks[o.optInt("clock").coerceIn(0, clocks.size - 1)], o.optBoolean("rated"), vKey)
+		else {
+			val (m, inc) = challengeClocks[o.optInt("clock").coerceIn(0, challengeClocks.size - 1)]
+			startAi(o.optInt("level", 3), m, inc, vKey)
+		}
+	}
+
+	private fun startAi(lvl: Int, m: Int, inc: Int, vKey: String) {
+		Lichess.exec.execute {
+			try {
+				val o = Lichess.call(a, "POST", "/api/challenge/ai", mapOf("level" to "$lvl", "clock.limit" to "${m * 60}", "clock.increment" to "$inc", "color" to "random", "variant" to vKey))
+				val id = o.optString("id")
+				BotRunner.main.post { if (opened.add(id)) a.push(OnlineGameScreen(a, id)) }
+			} catch (e: Exception) { BotRunner.main.post { a.toast("Lichess: ${e.message}") } }
+		}
+	}
+
 	override fun dispose() { stopEvents(); seek?.close() }
 
 	companion object {
 		// чтобы одна и та же партия не открылась дважды (ответ на вызов ИИ + событие gameStart)
 		val opened = HashSet<String>()
+		val CLOCKS = listOf(10 to 0, 10 to 5, 15 to 10, 30 to 0, 30 to 20)
+		// Board API: блиц разрешён только в вызовах и против ИИ, пуля — нигде
+		val CHALLENGE_CLOCKS = listOf(3 to 0, 3 to 2, 5 to 0, 5 to 3, 10 to 0, 10 to 5, 15 to 10, 30 to 0)
 	}
 }
 
@@ -545,7 +567,7 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 			.put("reason", resultText().substringAfter("· ", resultText()))
 			.put("fen", startFen).put("uci", game.uciList()).put("tc", "lichess").put("variant", variant)
 		st.saveGame(o)
-		if (plies > 0 && (variant == V.STANDARD || variant == V.CHESS960)) Analyzer.start(a, startFen, game.uciList(), variant)
+		if (plies > 0) Analyzer.start(a, startFen, game.uciList(), variant)
 		val body = ui.col(0, 6)
 		r.lines.forEach { body.addView(ui.text(it, 14f)) }
 		if (r.diamonds > 0) body.addView(ui.text("Всего: +${r.diamonds} 💎", 16f, ui.t.accent, true))

@@ -123,7 +123,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			whiteBottom = saved.optBoolean("wb", whiteBottom)
 		}
 		if (cfg.hvh && !cfg.faceToFace) whiteBottom = game.pos.side == P.WHITE
-		Stockfish.play.newGame()
+		Stockfish.newGame()
 		link?.onClosed = {
 			if (result == null) { linkLost = true; a.toast("Соединение с соперником потеряно"); updateStatus() }
 		}
@@ -225,11 +225,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		buildBar(topBar, if (whiteBottom) P.BLACK else P.WHITE, cfg.hvh && cfg.faceToFace)
 		buildBar(bottomBar, if (whiteBottom) P.WHITE else P.BLACK, false)
 		requestBar(pos, if (live) game.moves.size else viewPly)
-		val ply = if (live) game.moves.size else viewPly
-		val cls = liveClasses[ply]
-		if (cls != null && move != 0 && (st.flag("liveJudge", true) || cls == MoveClass.BRILLIANT || cls == MoveClass.GREAT)) {
-			board.badgeSq = M.to(move); board.badgeClass = cls; board.invalidate()
-		}
+		applyBadge(if (live) game.moves.size else viewPly)
 		updateStatus()
 		buildMoves()
 		buildControls()
@@ -241,7 +237,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		val my = barToken.incrementAndGet()
 		val uci = game.moves.take(ply).joinToString(" ") { M.uci(it) }
 		val p = pos.copy()
-		val e = Stockfish.bar
+		val e = Stockfish.bar(cfg.variant)
 		e.exec.execute {
 			if (barToken.get() != my) return@execute
 			val st0 = Rules.status(p)
@@ -249,7 +245,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			var mate = 0
 			if (st0.outcome != Outcome.NONE) score = when (st0.outcome) { Outcome.WHITE_WINS -> 10000; Outcome.BLACK_WINS -> -10000; else -> 0 }
 			else {
-				val l = if (!cfg.stockfishOk) null else e.analyse(a, cfg.startFen, uci, p.side == P.WHITE, "depth 3", 1, c960)?.firstOrNull()
+				val l = e.analyse(a, cfg.startFen, uci, p.side == P.WHITE, "depth 3", 1, cfg.variant)?.firstOrNull()
 				score = l?.score ?: Eval.evaluate(p).coerceIn(-9000, 9000)
 				mate = l?.mate ?: 0
 			}
@@ -264,6 +260,21 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 				}
 			}
 		}
+	}
+
+	// Значок типа хода остаётся на последнем оценённом ходе человека, пока соперник отвечает,
+	// а не пропадает сразу после быстрого хода бота
+	private fun badgePly(ply: Int): Int = (ply downTo maxOf(1, ply - 1)).firstOrNull { liveClasses.containsKey(it) } ?: -1
+
+	private fun applyBadge(ply: Int, celebrate: Boolean = false) {
+		val p = badgePly(ply)
+		if (p < 0 || p > game.moves.size) return
+		val cls = liveClasses[p] ?: return
+		val big = cls == MoveClass.BRILLIANT || cls == MoveClass.GREAT
+		if (!big && !st.flag("liveJudge", true)) return
+		val to = M.to(game.moves[p - 1])
+		if (celebrate && big) board.celebrate(to, cls)
+		else { board.badgeSq = to; board.badgeClass = cls; board.invalidate() }
 	}
 
 	private fun materialDiff(color: Int): Int {
@@ -361,7 +372,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		for (i in game.sanRu.indices) {
 			if (whiteTurn || i == 0) movesRow.addView(ui.text(if (whiteTurn) "$num." else "$num…", 13f, ui.t.sub))
 			val sel = i + 1 == cur
-			val tv = ui.text(game.sanRu[i], 14f, if (sel) Ui.contrast(ui.t.accent) else ui.t.text, sel)
+			val tv = ui.text(game.san(i, st.flag("sanEn", false)), 14f, if (sel) Ui.contrast(ui.t.accent) else ui.t.text, sel)
 			tv.setPadding(ui.dp(6), ui.dp(4), ui.dp(6), ui.dp(4))
 			val ply = i + 1
 			ui.clickable(tv, if (sel) ui.t.accent else 0, 8f) { viewPly = if (ply == game.moves.size) -1 else ply; refreshAll(false) }
@@ -391,7 +402,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		if (botVsBot) {
 			add(if (paused) "▶ Продолжить" else "⏸ Пауза", primary = true) {
 				paused = !paused
-				if (paused) { token.incrementAndGet(); Stockfish.play.stop(); thinking = false }
+				if (paused) { token.incrementAndGet(); Stockfish.stopPlay(); thinking = false }
 				refreshAll(false); maybeBot()
 			}
 			return
@@ -494,20 +505,17 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			a.toast(name + r.lines.joinToString("") { "\n$it" })
 		}
 		// оценка хода Stockfish (в потоке анализа)
-		if (!cfg.stockfishOk) return
-		Judge.judgeLive(a, cfg.startFen, uciBefore, before, m, c960) { cls ->
+		Judge.judgeLive(a, cfg.startFen, uciBefore, before, m, cfg.variant) { cls ->
 			if (cls == null || ply > game.moves.size || game.moves[ply - 1] != m) return@judgeLive
 			liveClasses[ply] = cls
-			val showing = viewPly < 0 && game.moves.size == ply || viewPly == ply
+			val cur = if (viewPly < 0) game.moves.size else viewPly
+			if (badgePly(cur) == ply) applyBadge(cur, true)
 			if (cls == MoveClass.BRILLIANT || cls == MoveClass.GREAT) {
-				if (showing) board.celebrate(M.to(m), cls)
 				status.text = if (cls == MoveClass.BRILLIANT) "!! Бриллиантовый ход! 💎" else "! Отличный ход — единственный сильный"
 				if (rated) {
 					val r = st.countMotif(if (cls == MoveClass.BRILLIANT) "brilliant" else "great")
 					if (r.lines.isNotEmpty()) a.toast(r.lines.joinToString("\n"))
 				}
-			} else if (showing && st.flag("liveJudge", true)) {
-				board.badgeSq = M.to(m); board.badgeClass = cls; board.invalidate()
 			}
 		}
 	}
@@ -538,9 +546,10 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			if (pl.kind == Player.Kind.STOCKFISH) {
 				var mt = if (pl.level <= 0) 1500 else 700
 				if (cfg.hasClock) mt = minOf(mt, maxOf(80, (myTime / 40).toInt()))
-				val best = Stockfish.play.bestMove(a, startFen, uci, pl.level, mt, c960)
+				val eng = Stockfish.play(cfg.variant, pl.level)
+				val best = eng.bestMove(a, startFen, uci, pl.level, mt, cfg.variant)
 				if (best != null) mv = pos.parseUci(best)
-				if (mv == 0) { err = "Stockfish недоступен: ${Stockfish.play.lastError ?: "нет ответа"}. Ход сделал Материал."; mv = MaterialBot(4).pick(pos, plies) { token.get() != my } }
+				if (mv == 0) { err = "Stockfish недоступен: ${eng.lastError ?: "нет ответа"}. Ход сделал Материал."; mv = MaterialBot(4).pick(pos, plies) { token.get() != my } }
 			} else {
 				mv = BotRunner.botFor(pl)!!.pick(pos, plies) { token.get() != my }
 			}
@@ -556,7 +565,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 
 	private fun takeback() {
 		if (result != null) return
-		token.incrementAndGet(); Stockfish.play.stop(); thinking = false
+		token.incrementAndGet(); Stockfish.stopPlay(); thinking = false
 		if (cfg.bot != null) {
 			// откатываем до хода человека
 			do { if (!game.undo()) break } while (game.moves.isNotEmpty() && !playerOf(game.pos.side).isHuman)
@@ -578,7 +587,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		val startFen = cfg.startFen; val uci = game.uciList(); val pos = game.pos.copy()
 		val ply = game.moves.size
 		BotRunner.exec.execute {
-			var m = if (!cfg.stockfishOk) 0 else Stockfish.play.analyse(a, startFen, uci, pos.side == P.WHITE, "movetime 800", 1, c960)?.firstOrNull()?.move?.let { pos.parseUci(it) } ?: 0
+			var m = Stockfish.play(cfg.variant).analyse(a, startFen, uci, pos.side == P.WHITE, "movetime 800", 1, cfg.variant)?.firstOrNull()?.move?.let { pos.parseUci(it) } ?: 0
 			if (m == 0) m = MaterialBot(5).pick(pos, ply) { false }
 			BotRunner.main.post {
 				if (game.moves.size != ply || result != null) return@post
@@ -610,14 +619,14 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 	private fun finish(r: GameResult) {
 		if (result != null) return
 		result = r
-		token.incrementAndGet(); Stockfish.play.stop(); thinking = false
+		token.incrementAndGet(); Stockfish.stopPlay(); thinking = false
 		viewPly = -1
 		st.setStr("current", "")
 		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.Kind.END)
 		board.clearPremove()
 		val reward = giveRewards(r)
 		saveHistory(r)
-		if (game.moves.isNotEmpty() && cfg.stockfishOk) Analyzer.start(a, cfg.startFen, game.uciList(), cfg.variant)
+		if (game.moves.isNotEmpty()) Analyzer.start(a, cfg.startFen, game.uciList(), cfg.variant)
 		refreshAll(false)
 		showEnd(r, reward)
 	}
@@ -711,7 +720,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		link?.close()
 		barToken.incrementAndGet()
 		token.incrementAndGet()
-		Stockfish.play.stop()
+		Stockfish.stopPlay()
 		BotRunner.main.removeCallbacks(tick)
 	}
 

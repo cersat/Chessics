@@ -1,3 +1,6 @@
 [submodule "external/stockfish"]
 	path = external/stockfish
 	url = https://github.com/official-stockfish/Stockfish
+[submodule "external/fairy-stockfish"]
+	path = external/fairy-stockfish
+	url = https://github.com/fairy-stockfish/Fairy-Stockfish

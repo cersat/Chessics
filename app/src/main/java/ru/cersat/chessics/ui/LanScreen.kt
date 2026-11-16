@@ -14,7 +14,8 @@ import ru.cersat.chessics.data.Lan
 import ru.cersat.chessics.data.Link
 
 // Партия между двумя телефонами: один создаёт (хост), второй подключается
-class LanScreen(a: MainActivity) : Screen(a) {
+class LanScreen(a: MainActivity, private val auto: JSONObject? = null) : Screen(a) {
+	private var autoDone = false
 	private val st = a.store
 	private var waiting: Lan.Waiting? = null
 	private var discovery: Lan.Waiting? = null
@@ -101,6 +102,12 @@ class LanScreen(a: MainActivity) : Screen(a) {
 			startDiscovery()
 		}
 		box.addView(join)
+		// запуск из виджета: сразу создать партию с сохранёнными настройками
+		if (auto != null && !autoDone) {
+			autoDone = true
+			st.setStr("lanBt", if (auto.optBoolean("bt")) "1" else "0")
+			BotRunner.main.post { stopDiscovery(); a.refresh(); startHost(auto.optInt("color", 2), auto.optInt("clock"), auto.optInt("variant")) }
+		}
 		return ui.scroll(box)
 	}
 

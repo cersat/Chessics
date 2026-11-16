@@ -15,7 +15,7 @@ object San {
 		} else {
 			val capture = pos.sq[to] != 0 || M.isEp(m)
 			if (type == P.PAWN) {
-				if (capture) sb.append('a' + P.file(from)).append(if (ru) ":" else "x")
+				if (capture) sb.append('a' + P.file(from)).append("x")
 				sb.append(P.name(to))
 				val pr = M.promo(m)
 				if (pr != 0) sb.append('=').append(if (ru) RU[pr] else EN[pr].toString())
@@ -35,7 +35,7 @@ object San {
 					else if (!sameRank) sb.append('1' + P.rank(from))
 					else sb.append(P.name(from))
 				}
-				if (capture) sb.append(if (ru) ":" else "x")
+				if (capture) sb.append("x")
 				sb.append(P.name(to))
 			}
 		}
@@ -97,6 +97,9 @@ class GameRecord(val startFen: String = Position.START, val variant: Int = V.STA
 		moves.add(m)
 		pos.make(m)
 	}
+
+	// запись хода для интерфейса: русские или английские буквы фигур (настройка)
+	fun san(i: Int, english: Boolean) = if (english) sanEn[i] else sanRu[i]
 
 	fun undo(): Boolean {
 		if (moves.isEmpty()) return false

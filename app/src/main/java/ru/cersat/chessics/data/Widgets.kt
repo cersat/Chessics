@@ -35,6 +35,8 @@ object Widgets {
 		if (s.isNotEmpty()) StreakWidget.update(ctx, m, s)
 		val p = m.getAppWidgetIds(ComponentName(ctx, PuzzleWidget::class.java))
 		if (p.isNotEmpty()) PuzzleWidget.update(ctx, m, p)
+		val l = m.getAppWidgetIds(ComponentName(ctx, LaunchWidget::class.java))
+		if (l.isNotEmpty()) LaunchWidget.update(ctx, m, l)
 	}
 
 	fun openIntent(ctx: Context, action: String, code: Int): PendingIntent {
@@ -216,6 +218,62 @@ class PuzzleWidget : AppWidgetProvider() {
 				val v = RemoteViews(ctx.packageName, R.layout.widget_image)
 				v.setImageViewBitmap(R.id.widget_img, render(ctx, w, h))
 				v.setOnClickPendingIntent(R.id.widget_img, Widgets.openIntent(ctx, "ru.cersat.chessics.DAILY", 2))
+				m.updateAppWidget(id, v)
+			}
+		}
+	}
+}
+
+// Виджет быстрого старта: при добавлении открывается выбор игры, нажатие сразу её запускает
+class LaunchWidget : AppWidgetProvider() {
+	override fun onUpdate(ctx: Context, m: AppWidgetManager, ids: IntArray) = update(ctx, m, ids)
+	override fun onAppWidgetOptionsChanged(ctx: Context, m: AppWidgetManager, id: Int, o: android.os.Bundle) = update(ctx, m, intArrayOf(id))
+
+	override fun onDeleted(ctx: Context, ids: IntArray) {
+		val st = Store.get(ctx)
+		for (id in ids) st.setStr("launch_$id", "")
+	}
+
+	companion object {
+		fun render(ctx: Context, id: Int, w: Int, h: Int): Bitmap {
+			val skin = Shop.widget(ctx)
+			val o = try { org.json.JSONObject(Store.get(ctx).str("launch_$id", "")) } catch (_: Exception) { null }
+			val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+			val c = Canvas(bmp)
+			val fw = w.toFloat(); val fh = h.toFloat()
+			Widgets.background(c, fw, fh, skin, minOf(fw, fh) * 0.16f)
+			val u = minOf(fh, fw / 2.2f)
+			val p = Paint(Paint.ANTI_ALIAS_FLAG)
+			// кнопка «играть»
+			val r = u * 0.3f; val cx = u * 0.45f; val cy = fh / 2
+			p.color = skin.accent
+			c.drawCircle(cx, cy, r, p)
+			p.color = if (skin.style == 3) skin.text else 0xFF15171C.toInt()
+			val tri = Path()
+			tri.moveTo(cx - r * 0.32f, cy - r * 0.45f); tri.lineTo(cx + r * 0.5f, cy); tri.lineTo(cx - r * 0.32f, cy + r * 0.45f); tri.close()
+			c.drawPath(tri, p)
+			p.color = skin.text
+			p.setShadowLayer(4f, 0f, 1f, 0x66000000)
+			p.isFakeBoldText = true; p.textSize = u * 0.22f
+			val left = u * 0.9f
+			val maxW = fw - left - u * 0.15f
+			fun fit(s: String): String { var t = s; while (t.length > 3 && p.measureText(t) > maxW) t = t.dropLast(2) + "…"; return t }
+			c.drawText(fit(o?.optString("title") ?: "Не настроен"), left, cy - u * 0.02f, p)
+			p.isFakeBoldText = false; p.textSize = u * 0.14f
+			c.drawText(fit(o?.optString("subtitle") ?: "удали и добавь виджет заново"), left, cy + u * 0.2f, p)
+			return bmp
+		}
+
+		fun update(ctx: Context, m: AppWidgetManager, ids: IntArray) {
+			for (id in ids) {
+				val (w, h) = Widgets.sizePx(ctx, m, id, 250, 110)
+				val v = RemoteViews(ctx.packageName, R.layout.widget_image)
+				v.setImageViewBitmap(R.id.widget_img, render(ctx, id, w, h))
+				val i = Intent(ctx, MainActivity::class.java).setAction("ru.cersat.chessics.LAUNCH")
+					.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+					.setData(android.net.Uri.parse("chessics://launch/$id"))
+					.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+				v.setOnClickPendingIntent(R.id.widget_img, PendingIntent.getActivity(ctx, 1000 + id, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
 				m.updateAppWidget(id, v)
 			}
 		}

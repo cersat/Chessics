@@ -2,6 +2,7 @@ package ru.cersat.chessics.ui
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.appwidget.AppWidgetManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -26,7 +27,9 @@ abstract class Screen(val a: MainActivity) {
 	open fun onPause() {}
 }
 
-class MainActivity : Activity() {
+open class MainActivity : Activity() {
+	// открыто для настройки виджета быстрого старта
+	private var configWidget = -1
 	lateinit var ui: Ui
 	private lateinit var content: FrameLayout
 	private lateinit var nav: LinearLayout
@@ -84,6 +87,14 @@ class MainActivity : Activity() {
 			onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
 		}
 
+		if (intent?.action == AppWidgetManager.ACTION_APPWIDGET_CONFIGURE) {
+			configWidget = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1)
+			setResult(RESULT_CANCELED, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, configWidget))
+			if (configWidget < 0) { finish(); return }
+			stack.add(WidgetConfigScreen(this, configWidget))
+			render()
+			return
+		}
 		val restoreTab = saved?.getInt("tab", 0) ?: 0
 		showTab(restoreTab)
 		handleIntent(intent)
@@ -109,6 +120,11 @@ class MainActivity : Activity() {
 	}
 
 	private fun handleIntent(i: Intent?) {
+		if (i?.action == "ru.cersat.chessics.LAUNCH") {
+			val id = i.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1)
+			if (id >= 0) WidgetSetup.launch(this, id)
+			return
+		}
 		if (i?.action == "ru.cersat.chessics.DAILY") {
 			val pz = ru.cersat.chessics.data.Puzzles.daily(this) ?: return
 			push(PuzzleScreen(this, pz, true))
@@ -133,6 +149,7 @@ class MainActivity : Activity() {
 		val top = stack.lastOrNull()
 		if (top != null && top.onBack()) return
 		if (stack.size > 1) pop()
+		else if (configWidget >= 0) finish() // выход из настройки виджета без выбора — виджет не добавится
 		else if (navTab != 0) showTab(0)
 		else finish()
 	}

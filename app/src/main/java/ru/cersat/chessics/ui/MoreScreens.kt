@@ -111,18 +111,21 @@ class ShopScreen(a: MainActivity) : Screen(a) {
 		r.background = ui.round(ui.t.card, 18f)
 		r.addView(preview(item))
 		val owned = st.owns(item.id)
-		val sel = st.selected(item.cat) == item.id
-		val desc = when (item) {
+		val sel = st.selected(item.cat) == item.id && owned
+		val req = item.req
+		val desc0 = when (item) {
 			is Shop.Pieces -> item.credit
 			is Shop.Widget -> "Для виджета серии и задачи дня"
 			is Shop.Theme -> if (item.light) "Светлая тема приложения" else "Тёмная тема приложения"
 			is Shop.Sound -> item.desc + if (item.style > 0) " · нажми, чтобы послушать" else ""
 			else -> "Цвета клеток и подсветки"
 		}
+		val desc = if (req == null) desc0 else desc0 + "\n" + (if (owned) "🏆 Открыто: " else "🔒 ") + req.text + if (!owned && req.target > 1) " (${req.progress(st)}/${req.target})" else ""
 		r.addView(ui.col(0, 2, ui.text(item.name, 16f, bold = true), ui.sub(desc, 12f)), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		val btn = when {
 			sel -> ui.button("✓", false, false) {}
 			owned -> ui.button("Выбрать", false) { choose(item) }
+			req != null -> ui.button("🔒", false, false) {}
 			else -> ui.button("${item.price} 💎", true, st.diamonds >= item.price) {
 				if (st.buy(item)) { a.toast("Куплено: ${item.name}"); choose(item) }
 			}
@@ -247,6 +250,7 @@ class SettingsScreen(a: MainActivity) : Screen(a) {
 		box.addView(toggle("Анимация ходов", "anim", true))
 		box.addView(toggle("Значок типа своего хода во время партии (★, ?!, ??…)", "liveJudge", true))
 		box.addView(toggle("Сразу превращать пешку в ферзя", "autoqueen", false))
+		box.addView(toggle("Показывать аббревиатуры фигур на английском (N, B, R, Q, K)", "sanEn", false))
 		box.addView(toggle("Предходы (ход заранее, пока думает соперник)", "premove", true))
 		box.addView(toggle("Вибрация при ходе", "vibro", true))
 		box.addView(toggle("Напоминание о серии в 20:00", "remind", true) {
