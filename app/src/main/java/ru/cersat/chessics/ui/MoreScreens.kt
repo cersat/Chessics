@@ -38,6 +38,16 @@ class ShopScreen(a: MainActivity) : Screen(a) {
 		})
 		box.addView(fz)
 
+		// подсказки
+		val hc = ui.card()
+		hc.addView(ui.row(12, ui.text("💡", 32f), ui.col(0, 2, ui.text("Подсказка", 17f, bold = true),
+			ui.sub("Лучший ход в партии с ботом или в задаче. Награду не уменьшает. Каждая следующая на 1 💎 дороже. У тебя: ${st.hintsLeft}."))))
+		hc.addView(ui.space(10))
+		hc.addView(ui.button("Купить за ${st.hintPrice} 💎", true, st.diamonds >= st.hintPrice) {
+			if (st.buyHint()) { a.toast("Подсказка куплена 💡"); a.refresh() }
+		})
+		box.addView(hc)
+
 		// разделы сворачиваются; открыт только один
 		val open = st.str("shopOpen", Shop.Cat.THEME.name)
 		for (cat in Shop.Cat.values()) {

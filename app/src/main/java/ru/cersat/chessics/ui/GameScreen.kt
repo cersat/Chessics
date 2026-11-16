@@ -417,7 +417,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		}
 		add("↩", n > 0 && viewPly < 0) { takeback() }
 		if (cfg.bot != null) {
-			add("💡${HINT}", viewPly < 0 && humanTurn()) { hint() }
+			add("💡${st.hintsLeft}", viewPly < 0 && humanTurn()) { hint() }
 			if (endgame == null) add("½") { offerDrawToBot() }
 			add("⚑") { resign(cfg.humanColor) }
 		}
@@ -580,9 +580,9 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 	}
 
 	private fun hint() {
-		if (!st.spend(HINT)) { a.toast("Подсказка стоит $HINT 💎 — алмазов не хватает"); return }
+		if (!st.useHint()) { a.toast("Подсказки кончились — купи их в магазине (сейчас ${st.hintPrice} 💎)"); return }
 		hints++
-		st.hintUsed()
+		refreshAll(false)
 		status.text = "Ищу лучший ход…"
 		val startFen = cfg.startFen; val uci = game.uciList(); val pos = game.pos.copy()
 		val ply = game.moves.size
@@ -725,6 +725,5 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 	}
 
 	companion object {
-		const val HINT = 3
 	}
 }

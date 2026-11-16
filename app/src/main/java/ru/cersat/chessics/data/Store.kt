@@ -97,6 +97,26 @@ class Store private constructor(private val ctx: Context) {
 		if (bonus > 0) { r.diamonds += bonus; r.lines.add("🏅 Рубеж серии $s дней: +$bonus 💎") }
 	}
 
+	// подсказки покупаются заранее; каждая следующая дороже предыдущей на 1 💎
+	val hintsLeft: Int get() = int("hintsLeft")
+	val hintPrice: Int get() = 1 + int("hintsBought")
+
+	fun buyHint(): Boolean {
+		if (!spend(hintPrice)) return false
+		setInt("hintsBought", int("hintsBought") + 1)
+		setInt("hintsLeft", hintsLeft + 1)
+		changed()
+		return true
+	}
+
+	fun useHint(): Boolean {
+		if (hintsLeft <= 0) return false
+		setInt("hintsLeft", hintsLeft - 1)
+		inc("hints")
+		changed()
+		return true
+	}
+
 	fun buyFreeze(): Boolean {
 		if (freezes >= maxFreezes) return false
 		if (!spend(Shop.FREEZE_PRICE)) return false
@@ -200,7 +220,8 @@ class Store private constructor(private val ctx: Context) {
 		return r
 	}
 
-	fun puzzleSolved(id: String, reward: Int, clean: Boolean, daily: Boolean): Reward {
+	// clean — без ошибок и подсказок (для рейтинга и повторений), noMistakes — без ошибок (для алмазов)
+	fun puzzleSolved(id: String, reward: Int, clean: Boolean, daily: Boolean, noMistakes: Boolean = clean): Reward {
 		val r = Reward()
 		val solved = sp.getStringSet("solved", emptySet())!!.toMutableSet()
 		val first = solved.add(id)
@@ -216,9 +237,9 @@ class Store private constructor(private val ctx: Context) {
 			inc("puzzles")
 			if (clean) inc("puzzlesClean")
 			if (id.startsWith("gen_")) inc("genSolved")
-			val g = if (clean) reward else 0
+			val g = if (noMistakes) reward else 0
 			r.diamonds += g
-			r.lines.add(if (g > 0) "Задача решена: +$g 💎" else "Задача решена (с ошибкой или подсказкой — без алмазов)")
+			r.lines.add(if (g > 0) "Задача решена: +$g 💎" else "Задача решена (с ошибкой — без алмазов)")
 			if (daily) {
 				r.diamonds += 2
 				r.lines.add("🗓 Задача дня: +2 💎")
@@ -234,7 +255,6 @@ class Store private constructor(private val ctx: Context) {
 	fun isSolved(id: String) = sp.getStringSet("solved", emptySet())!!.contains(id)
 	val dailySolvedToday get() = sp.getLong("dailySolved", -1) == today
 
-	fun hintUsed() = inc("hints")
 
 	// ---------- рейтинг в задачах (Эло, K = 24; засчитывается только первая попытка) ----------
 	val puzzleRating get() = int("puzzleRating", 1200)

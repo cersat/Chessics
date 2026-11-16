@@ -177,7 +177,7 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 			"Ход ${if (hero == P.WHITE) "белых" else "чёрных"}: " + if (pz.mate > 0) "мат в $heroLeft" else "выиграй материал"
 		controls.removeAllViews()
 		if (!solved) {
-			controls.addView(ui.button("💡 Подсказка", false, !busy) { showHint() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+			controls.addView(ui.button("💡 Подсказка (${st.hintsLeft})", false, !busy) { showHint() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 			controls.addView(ui.button("Заново", false, !busy) { restart() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		} else {
 			val nextRepeat = st.repeatIds().filter { it != pz.id }.mapNotNull { Puzzles.byId(a, it) }.firstOrNull()
@@ -188,10 +188,12 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 	}
 
 	private fun showHint() {
-		failOnce()
+		if (!st.useHint()) { a.toast("Подсказки кончились — купи их в магазине (сейчас ${st.hintPrice} 💎)"); return }
+		failOnce(false)
+		update(null)
 		if (!offLine) {
 			board.hintMove = pos.parseUci(pz.moves[step]); board.invalidate()
-			update("Подсказка показана — алмазов за эту задачу не будет")
+			update("Подсказка показана")
 			return
 		}
 		busy = true; update("Ищу ход…")
@@ -201,7 +203,7 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 			BotRunner.main.post {
 				busy = false
 				if (mv != null) { board.hintMove = p.parseUci(mv); board.invalidate() }
-				update("Подсказка показана — алмазов за эту задачу не будет")
+				update("Подсказка показана")
 			}
 		}
 	}
@@ -303,7 +305,10 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 	}
 
 	// первая ошибка или подсказка: минус рейтинг (если задача ещё не оценивалась) и в очередь повторения
-	private fun failOnce() {
+	private var mistake = false
+
+	private fun failOnce(isMistake: Boolean = true) {
+		if (isMistake) mistake = true
 		if (!clean) return
 		clean = false
 		val d = st.puzzleRated(pz.id, pz.rating, false)
@@ -318,7 +323,7 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 		solved = true
 		if (clean) { val d = st.puzzleRated(pz.id, pz.rating, true); if (d != 0) ratingDelta = d }
 		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.Kind.GOOD)
-		val r = st.puzzleSolved(pz.id, pz.reward, clean, daily && Puzzles.daily(a)?.id == pz.id)
+		val r = st.puzzleSolved(pz.id, pz.reward, clean, daily && Puzzles.daily(a)?.id == pz.id, !mistake)
 		if (ratingDelta != 0) r.lines.add(0, "Рейтинг в задачах: ${st.puzzleRating} (${if (ratingDelta > 0) "+" else ""}$ratingDelta)")
 		update(null)
 		val body = ui.col(0, 6)
