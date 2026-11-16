@@ -43,7 +43,7 @@ object F4 {
 	}
 
 	val FORWARD = arrayOf(intArrayOf(0, 1), intArrayOf(1, 0), intArrayOf(0, -1), intArrayOf(-1, 0))
-	const val PROMO_RANK = 10 // 11-я горизонталь (с нуля — 10)
+	const val PROMO_RANK = 7 // 8-я горизонталь (с нуля — 7), в центре доски
 	val BACK = intArrayOf(P.ROOK, P.KNIGHT, P.BISHOP, P.QUEEN, P.KING, P.BISHOP, P.KNIGHT, P.ROOK)
 }
 
