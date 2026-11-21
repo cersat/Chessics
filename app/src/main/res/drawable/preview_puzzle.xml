@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Превью виджета задачи дня -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+	android:width="140dp" android:height="160dp"
+	android:viewportWidth="156" android:viewportHeight="178">
+	<path android:fillColor="#FF232838" android:pathData="M12,0h132a12,12 0 0 1 12,12v154a12,12 0 0 1 -12,12h-132a12,12 0 0 1 -12,-12v-154a12,12 0 0 1 12,-12z" />
+	<path android:fillColor="#FFFFFFFF" android:pathData="M12,12h90v10h-90z" />
+	<path android:fillColor="#FFEEEED2" android:pathData="M12,34h22v22h-22zM56,34h22v22h-22zM100,34h22v22h-22zM34,56h22v22h-22zM78,56h22v22h-22zM122,56h22v22h-22zM12,78h22v22h-22zM56,78h22v22h-22zM100,78h22v22h-22zM34,100h22v22h-22zM78,100h22v22h-22zM122,100h22v22h-22zM12,122h22v22h-22zM56,122h22v22h-22zM100,122h22v22h-22zM34,144h22v22h-22zM78,144h22v22h-22zM122,144h22v22h-22z" />
+	<path android:fillColor="#FF769656" android:pathData="M34,34h22v22h-22zM78,34h22v22h-22zM122,34h22v22h-22zM12,56h22v22h-22zM56,56h22v22h-22zM100,56h22v22h-22zM34,78h22v22h-22zM78,78h22v22h-22zM122,78h22v22h-22zM12,100h22v22h-22zM56,100h22v22h-22zM100,100h22v22h-22zM34,122h22v22h-22zM78,122h22v22h-22zM122,122h22v22h-22zM12,144h22v22h-22zM56,144h22v22h-22zM100,144h22v22h-22z" />
+	<path android:fillColor="#FFFFFFFF" android:strokeColor="#FF15171C" android:strokeWidth="2" android:pathData="M67,111a9,9 0 1 1 0,18a9,9 0 1 1 0,-18z" />
+	<path android:fillColor="#FF15171C" android:pathData="M111,67a9,9 0 1 1 0,18a9,9 0 1 1 0,-18z" />
+</vector>

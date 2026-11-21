@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Превью виджета быстрого старта -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+	android:width="180dp" android:height="60dp"
+	android:viewportWidth="240" android:viewportHeight="80">
+	<path android:fillColor="#FF232838" android:pathData="M14,0h212a14,14 0 0 1 14,14v52a14,14 0 0 1 -14,14h-212a14,14 0 0 1 -14,-14v-52a14,14 0 0 1 14,-14z" />
+	<path android:fillColor="#FFFFB13B" android:pathData="M40,16a24,24 0 1 1 0,48a24,24 0 1 1 0,-48z" />
+	<path android:fillColor="#FF15171C" android:pathData="M33,28L52,40L33,52z" />
+	<path android:fillColor="#FFFFFFFF" android:pathData="M78,26h110v12h-110z" />
+	<path android:fillColor="#99FFFFFF" android:pathData="M78,46h140v7h-140z" />
+</vector>

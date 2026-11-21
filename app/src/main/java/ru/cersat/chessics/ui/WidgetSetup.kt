@@ -10,15 +10,16 @@ import ru.cersat.chessics.bots.Player
 import ru.cersat.chessics.chess.Position
 import ru.cersat.chessics.chess.V
 import ru.cersat.chessics.data.LaunchWidget
+import ru.cersat.chessics.data.Widgets
 
 // Виджет быстрого старта: при добавлении открывается этот выбор, настройки хранятся для каждого виджета отдельно
 object WidgetSetup {
-	fun key(id: Int) = "launch_$id"
+	fun key(id: Int) = LaunchWidget.key(id)
 
 	fun save(a: MainActivity, widgetId: Int, cfg: JSONObject, title: String, subtitle: String) {
 		cfg.put("title", title).put("subtitle", subtitle)
 		a.store.setStr(key(widgetId), cfg.toString())
-		LaunchWidget.update(a, AppWidgetManager.getInstance(a), intArrayOf(widgetId))
+		Widgets.update(a, LaunchWidget::class.java, intArrayOf(widgetId))
 		a.setResult(Activity.RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId))
 		a.finish()
 	}

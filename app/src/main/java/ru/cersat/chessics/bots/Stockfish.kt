@@ -20,6 +20,7 @@ class Engine(private val name: String, private val threads: Int, val fairy: Bool
 	private var curMultiPv = 1
 	private var cur960 = false
 	private var curVariant = "chess"
+	private var curPath = ""
 	@Volatile var lastError: String? = null
 		private set
 
@@ -66,7 +67,7 @@ class Engine(private val name: String, private val threads: Int, val fairy: Bool
 				}
 				send("isready")
 				readUntil("readyok") ?: throw IllegalStateException("нет readyok")
-				curElo = -1; curMultiPv = 1; cur960 = false; curVariant = "chess"
+				curElo = -1; curMultiPv = 1; cur960 = false; curVariant = "chess"; curPath = ""
 				lastError = null
 				return true
 			} catch (e: Exception) {
@@ -168,6 +169,43 @@ class Engine(private val name: String, private val threads: Int, val fairy: Bool
 		return null
 	}
 
+	// ===== Варианты из конструктора (только Fairy) =====
+
+	private fun loadCustom(ctx: Context, section: String, ini: String) {
+		if (curVariant != section) {
+			val f = File(ctx.cacheDir, "fairy_$section.ini")
+			if (!f.exists() || f.readText() != ini) f.writeText(ini)
+			if (curPath != f.absolutePath) { send("setoption name VariantPath value ${f.absolutePath}"); curPath = f.absolutePath }
+			send("setoption name UCI_Variant value $section")
+			curVariant = section
+		}
+		if (cur960) { send("setoption name UCI_Chess960 value false"); cur960 = false }
+	}
+
+	fun customBest(ctx: Context, section: String, ini: String, fen: String, elo: Int, movetime: Int): String? {
+		if (!fairy || !start(ctx)) return null
+		synchronized(lock) {
+			return try {
+				loadCustom(ctx, section, ini); setElo(elo); setMultiPv(1)
+				send("position fen $fen")
+				send("go movetime $movetime")
+				readUntil("bestmove")?.split(" ")?.getOrNull(1)?.takeIf { it != "(none)" }
+			} catch (e: Exception) { fail(e); null }
+		}
+	}
+
+	fun customPerft(ctx: Context, section: String, ini: String, fen: String, depth: Int): Long? {
+		if (!fairy || !start(ctx)) return null
+		synchronized(lock) {
+			return try {
+				loadCustom(ctx, section, ini)
+				send("position fen $fen")
+				send("go perft $depth")
+				readUntil("Nodes searched")?.substringAfter(":")?.trim()?.toLongOrNull()
+			} catch (e: Exception) { fail(e); null }
+		}
+	}
+
 	// Прервать текущий расчёт (ответ bestmove всё равно придёт и будет проигнорирован вызывающим)
 	fun stop() {
 		if (proc?.isAlive != true) return
@@ -235,6 +273,9 @@ object Stockfish {
 	// обычные шахматы — Stockfish
 	val play get() = sfPlay
 	val analysis get() = sfAnalysis
+
+	// Fairy для вариантов из конструктора
+	val fairyCustom get() = fPlay
 
 	fun stopPlay() { sfPlay.stop(); fPlay.stop() }
 	fun newGame() { sfPlay.newGame(); fPlay.newGame() }

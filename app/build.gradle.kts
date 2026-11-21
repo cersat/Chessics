@@ -15,8 +15,8 @@ android {
 		applicationId = "ru.cersat.chessics"
 		minSdk = 26
 		targetSdk = 36
-		versionCode = 12
-		versionName = "1.1.3"
+		versionCode = 13
+		versionName = "1.1.4"
 		ndk { abiFilters += listOf("arm64-v8a") }
 	}
 
@@ -169,7 +169,7 @@ val buildFairy by tasks.registering {
 			check(p.waitFor() == 0) { "Ошибка: ${cmd.joinToString(" ")}\n" + log.takeLast(40).joinToString("\n") }
 		}
 		logger.lifecycle("Собираю Fairy-Stockfish")
-		run("make", "-j${Runtime.getRuntime().availableProcessors()}", "build", "ARCH=armv8", "COMP=ndk")
+		run("make", "-j${Runtime.getRuntime().availableProcessors()}", "build", "ARCH=armv8", "COMP=ndk", "largeboards=yes")
 		run(File(bin, "llvm-strip").absolutePath, "stockfish")
 		val out = fsfOut.get().asFile
 		out.parentFile.mkdirs()

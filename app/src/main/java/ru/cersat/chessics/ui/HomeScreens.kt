@@ -103,6 +103,9 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		box.addView(modeCard("🎨", "Шахматы на четверых", "Две команды на доске 14×14: люди и боты в любом составе") {
 			a.push(FourSetupScreen(a))
 		})
+		box.addView(modeCard("🧩", "Конструктор вариантов", "Своя доска, свои фигуры и правила — и партия против ботов или вдвоём") {
+			a.push(VariantListScreen(a))
+		})
 		box.addView(modeCard("📡", "По Wi-Fi или Bluetooth", "Партия между двумя телефонами рядом, без интернета") {
 			a.push(LanScreen(a))
 		})
