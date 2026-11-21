@@ -318,7 +318,9 @@ class VariantListScreen(a: MainActivity) : Screen(a) {
 
 class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 	private val st = a.store
-	private val v: Variant = VariantStore.list(st).getOrNull(index) ?: Variant.classic()
+	// перечитываем при каждой отрисовке: редактор фигуры сохраняет свои правки сам,
+	// и устаревшая копия здесь затёрла бы их при следующем сохранении
+	private var v: Variant = Variant.classic()
 	private var tool = 0 // 0 — поставить фигуру, 1 — стереть, 2 — заблокировать клетку
 	private var color = 0
 	private var piece = 0
@@ -326,6 +328,7 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 	private fun save() = VariantStore.put(st, index, v)
 
 	override fun build(): View {
+		v = VariantStore.list(st).getOrNull(index) ?: run { a.pop(); return View(a) }
 		val box = ui.col(16, 12)
 		box.addView(ui.row(10, ui.button("‹", false) { a.pop() }, ui.title("Редактор")))
 		box.addView(ui.sub("Всё сохраняется сразу."))
@@ -421,13 +424,15 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 
 class PieceEditorScreen(a: MainActivity, private val vi: Int, private val pi: Int) : Screen(a) {
 	private val st = a.store
-	private val v: Variant = VariantStore.list(st).getOrNull(vi) ?: Variant.classic()
-	private val d: PieceDef = v.pieces.getOrNull(pi) ?: PieceDef.pawn()
+	private var v: Variant = Variant.classic()
+	private var d: PieceDef = PieceDef.pawn()
 	private var grid: MoveGridView? = null
 
 	private fun save() = VariantStore.put(st, vi, v)
 
 	override fun build(): View {
+		v = VariantStore.list(st).getOrNull(vi) ?: run { a.pop(); return View(a) }
+		d = v.pieces.getOrNull(pi) ?: run { a.pop(); return View(a) }
 		val box = ui.col(16, 12)
 		box.addView(ui.row(10, ui.button("‹", false) { a.pop() }, ui.title("Фигура")))
 		box.addView(ui.sub("Название"))
