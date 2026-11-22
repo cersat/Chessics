@@ -182,15 +182,17 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 	private fun nextGenerated() {
 		val th = NextPuzzle.themeOf(pz)
 		var dlg: android.app.AlertDialog? = null
-		var shown = false
+		var done = false
 		NextPuzzle.next(a, th) { next ->
+			done = true
 			dlg?.dismiss()
-			if (next == null) { if (shown || dlg == null) a.toast("За 2 минуты не нашлось подходящей позиции — попробуй ещё раз"); return@next }
+			if (next == null) { a.toast("За 2 минуты не нашлось подходящей позиции — попробуй ещё раз"); return@next }
 			Puzzles.addGenerated(a, next)
 			a.replace(PuzzleScreen(a, next, false))
 		}
-		if (NextPuzzle.running) {
-			shown = true
+		// задача уже была готова — она открыта сразу, ждать нечего
+		// (а новый экран тут же начал искать следующую, поэтому смотреть только на running нельзя)
+		if (!done) {
 			dlg = a.dialog("Ищу задачу" + (th?.let { " · ${Puzzles.themeTitle(it).substringBefore(" · ")}" } ?: ""),
 				ui.sub("Генератор уже ищет её в фоне, осталось немного.", 14f), "Отмена" to { NextPuzzle.stopWaiting() }, cancelable = false)
 		}
