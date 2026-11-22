@@ -201,6 +201,19 @@ class ProfileScreen(a: MainActivity) : Screen(a) {
 			}
 			box.addView(card)
 		}
+
+		val eggs = ru.cersat.chessics.data.Eggs
+		box.addView(ui.text("Пасхалки · ${eggs.ALL.count { eggs.found(st, it.id) }} из ${eggs.ALL.size}", 19f, bold = true))
+		box.addView(ui.sub("Находятся сами по ходу игры. Каждая — +${eggs.REWARD} 💎."))
+		for (e in eggs.ALL) {
+			val got = eggs.found(st, e.id)
+			val card = ui.card(14, if (got) ui.t.card2 else ui.t.card)
+			val r = ui.row(10)
+			r.addView(ui.text(if (got) "🥚" else "❓", 22f))
+			r.addView(if (got) ui.col(0, 2, ui.text(e.title, 15f, bold = true), ui.sub(e.text, 12f)) else ui.text("???", 15f, ui.t.sub, true), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+			card.addView(r)
+			box.addView(card)
+		}
 		return ui.scroll(box)
 	}
 

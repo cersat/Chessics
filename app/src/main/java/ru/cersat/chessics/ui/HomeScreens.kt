@@ -68,7 +68,15 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 	override fun build(): View {
 		val box = ui.col(16, 14)
 		val head = ui.row(10)
-		head.addView(ui.title("Chessics"), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		val title = ui.title("Chessics")
+		// пасхалка: семь раз постучать по названию
+		var knocks = 0
+		title.setOnClickListener {
+			knocks++
+			if (knocks == 7) ru.cersat.chessics.data.Eggs.find(st, "knock")?.let { a.toast(it); a.refresh() } ?: a.toast("Кто там?")
+		}
+		head.addView(title, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		ru.cersat.chessics.data.Eggs.onHome(st).takeIf { it.isNotEmpty() }?.let { msgs -> BotRunner.main.post { a.toast(msgs.joinToString("\n")) } }
 		head.addView(pill("💎 ${st.diamonds}"))
 		head.addView(pill("❄ ${st.freezes}"))
 		box.addView(head)

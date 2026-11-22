@@ -538,6 +538,11 @@ class VariantSetupScreen(a: MainActivity, private val index: Int) : Screen(a) {
 
 class VariantGameScreen(a: MainActivity, private val v: Variant, private val white: String, private val black: String) : Screen(a) {
 	private val pos = VPos(v).also { it.record() }
+	init {
+		// пасхалка: фигура без единого хода стоит на доске
+		if (v.cells.any { it != 0 && v.has(it) && v.piece(it).moves.isEmpty() })
+			ru.cersat.chessics.data.Eggs.find(a.store, "statue")?.let { msg -> BotRunner.main.post { a.toast(msg) } }
+	}
 	private val seats = listOf(white, black)
 	private val fairyPlan = if (seats.any { it.startsWith("F") }) FairyVariant.plan(v).plan else null
 	private val bots: List<VBot?> = seats.map { s ->

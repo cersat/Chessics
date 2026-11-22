@@ -462,6 +462,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		val captured = before.capturedBy(m) != 0
 		game.play(m)
 		if (humanMove) afterHumanMove(before, uciBefore, m, game.moves.size)
+		if (humanMove) eggsAfterMove(before, m)
 		if (cfg.hasClock && game.moves.size > 1) times[mover] += cfg.inc * 1000L
 		if (humanMove && cfg.remote) sendRemote(JSONObject().put("t", "move").put("uci", M.uci(m)).put("ply", game.moves.size - 1).put("time", times[mover]))
 		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.forMove(captured, M.isCastle(m), game.pos.inCheck()))
@@ -614,6 +615,42 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			"Играть дальше" to {})
 	}
 
+	// ---------- пасхалки ----------
+
+	private fun egg(id: String) { ru.cersat.chessics.data.Eggs.find(st, id)?.let { a.toast(it) } }
+
+	private fun eggsAfterMove(before: ru.cersat.chessics.chess.Position, m: Int) {
+		val pc = before.sq[M.from(m)]
+		val type = P.type(pc); val color = P.color(pc)
+		if (type == P.KING && !M.isCastle(m) && game.moves.size in 3..4 && cfg.startFen == ru.cersat.chessics.chess.Position.START) egg("bongcloud")
+		if (M.isEp(m)) egg("holyhell")
+		if (M.promo(m) != 0 && M.promo(m) != P.QUEEN) egg("underpromo")
+		if (game.uciList() == "a2a4 e7e5 a1a3") egg("meadow")
+		if (type == P.KING && M.to(m) / 8 == (if (color == P.WHITE) 7 else 0)) egg("kingwalk")
+	}
+
+	private fun material(p: ru.cersat.chessics.chess.Position, color: Int): Int {
+		val v = intArrayOf(0, 1, 3, 3, 5, 9, 0)
+		return p.sq.sumOf { if (it != 0 && P.color(it) == color) v[P.type(it)] else 0 }
+	}
+
+	private fun eggsAtEnd(r: GameResult) {
+		val hc = cfg.humanColor
+		if (hc < 0 && !cfg.hvh) return // бот против бота не считается
+		val n = game.moves.size
+		val last = game.moves.lastOrNull() ?: 0
+		if (r.reason == "мат" && n <= 4) egg("foolsmate")
+		if (r.reason == "мат" && n <= 8 && last != 0 && (M.to(last) == 53 || M.to(last) == 13) && P.type(game.pos.sq[M.to(last)]) == P.QUEEN) egg("scholar")
+		val humanLost = hc >= 0 && ((r.outcome == Outcome.WHITE_WINS && hc == P.BLACK) || (r.outcome == Outcome.BLACK_WINS && hc == P.WHITE))
+		if (humanLost && playerOf(hc xor 1).kind == Player.Kind.RANDOM) egg("randomloss")
+		// пат поставил тот, кто ходил последним, — то есть не сторона на ходу
+		val stalemater = game.pos.side xor 1
+		if (r.reason == "пат" && playerOf(stalemater).isHuman && material(game.pos, stalemater) - material(game.pos, stalemater xor 1) >= 9) egg("bigstalemate")
+		if (n >= 200) egg("marathon")
+		if (r.reason.endsWith("сдались") && n <= 1) egg("instantresign")
+		if (ru.cersat.chessics.data.Eggs.night()) egg("owl")
+	}
+
 	// ---------- конец партии ----------
 
 	private fun finish(r: GameResult) {
@@ -625,6 +662,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		ru.cersat.chessics.data.Sounds.play(a, ru.cersat.chessics.data.Sounds.Kind.END)
 		board.clearPremove()
 		val reward = giveRewards(r)
+		eggsAtEnd(r)
 		saveHistory(r)
 		if (game.moves.isNotEmpty()) Analyzer.start(a, cfg.startFen, game.uciList(), cfg.variant)
 		refreshAll(false)
