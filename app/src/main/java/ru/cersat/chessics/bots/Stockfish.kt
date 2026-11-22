@@ -194,31 +194,34 @@ class Engine(private val name: String, private val threads: Int, val fairy: Bool
 		}
 	}
 
-	// оценка позиции варианта полной силой, с точки зрения белых (мат — ±(10000 − 10·n))
-	fun customEval(ctx: Context, section: String, ini: String, fen: String, whiteToMove: Boolean, movetime: Int): Line? {
+	// анализ позиции варианта полной силой: лучшие линии с точки зрения белых (мат — ±(10000 − 10·n)), от лучшей
+	fun customLines(ctx: Context, section: String, ini: String, fen: String, whiteToMove: Boolean, movetime: Int, multipv: Int = 1): List<Line>? {
 		if (!fairy || !start(ctx)) return null
 		synchronized(lock) {
 			try {
-				loadCustom(ctx, section, ini); setElo(0); setMultiPv(1)
+				loadCustom(ctx, section, ini); setElo(0); setMultiPv(multipv)
 				send("position fen $fen")
 				send("go movetime $movetime")
 				val sign = if (whiteToMove) 1 else -1
-				var last: Line? = null
+				val lines = arrayOfNulls<Line>(multipv)
 				while (true) {
 					val line = reader?.readLine() ?: return null
-					if (line.startsWith("info") && line.contains(" score ")) {
+					if (line.startsWith("info") && line.contains(" score ") && line.contains(" pv ")) {
 						val t = line.split(" ")
 						val si = t.indexOf("score")
-						if (si < 0 || si + 2 >= t.size) continue
+						val mi = t.indexOf("multipv")
+						val k = if (mi >= 0) (t[mi + 1].toIntOrNull() ?: 1) - 1 else 0
+						if (k !in 0 until multipv || si < 0 || si + 2 >= t.size) continue
 						var cp = 0; var mate = 0
 						if (t[si + 1] == "cp") cp = t[si + 2].toIntOrNull() ?: 0 else if (t[si + 1] == "mate") mate = t[si + 2].toIntOrNull() ?: 0
-						val pi = t.indexOf("pv")
-						val pv = if (pi >= 0) t.subList(pi + 1, t.size) else emptyList()
-						last = Line(cp * sign, mate * sign, pv.firstOrNull() ?: "", pv)
+						val pv = t.subList(t.indexOf("pv") + 1, t.size)
+						lines[k] = Line(cp * sign, mate * sign, pv.firstOrNull() ?: "", pv)
 					}
 					if (line.startsWith("bestmove")) {
 						val best = line.split(" ").getOrNull(1)?.takeIf { it != "(none)" } ?: ""
-						return last?.let { Line(it.cp, it.mate, best.ifEmpty { it.move }, it.pv) } ?: Line(0, 0, best, listOf(best))
+						val out = lines.filterNotNull().toMutableList()
+						if (out.isEmpty() && best.isNotEmpty()) out.add(Line(0, 0, best, listOf(best)))
+						return out
 					}
 				}
 			} catch (e: Exception) { fail(e); return null }

@@ -18,6 +18,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import ru.cersat.chessics.bots.MoveClass
 import ru.cersat.chessics.bots.Stockfish
 import ru.cersat.chessics.chess.FairyVariant
 import ru.cersat.chessics.chess.MoveRule
@@ -96,6 +97,9 @@ class VBoardView(ctx: Context) : View(ctx) {
 	private val p = Paint(Paint.ANTI_ALIAS_FLAG)
 	private val coord = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFakeBoldText = true }
 	private val board = Shop.board(ctx)
+	// значок типа хода, стрелка лучшего хода и вспышка — как в обычном разборе
+	val fx = MoveFx(this, { i -> col(i) * cell to row(i) * cell }, { cell })
+	var hint = 0
 
 	fun clearSel() { selected = -1; invalidate() }
 
@@ -133,11 +137,13 @@ class VBoardView(ctx: Context) : View(ctx) {
 			for (i in v.hillCells()) { val x = col(i) * s; val y = row(i) * s; c.drawRect(x + s * 0.06f, y + s * 0.06f, x + s * 0.94f, y + s * 0.94f, p) }
 			p.style = Paint.Style.FILL
 		}
+		fx.drawUnder(c)
 		for (i in sq.indices) {
 			val code = sq[i]
 			if (code == 0 || !v.has(code)) continue
 			VArt.draw(context, c, v.piece(code), code shr 8, col(i) * s, row(i) * s, s)
 		}
+		fx.drawOver(c, if (hint != 0) VM.from(hint) else -1, if (hint != 0) VM.to(hint) else -1)
 		if (selected >= 0) {
 			p.color = 0x66000000
 			for (m in legal) if (VM.from(m) == selected) {
@@ -789,19 +795,115 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 	}
 }
 
-// Просмотр и разбор партии в своём варианте. Анализ — Fairy-Stockfish, если он понимает вариант.
-class VariantReviewScreen(a: MainActivity, private val v: Variant, private val moves: List<IntArray>, private val title: String, private val resultText: String) : Screen(a) {
+// ===== Разбор партии в своём варианте: как обычный разбор, только движок — Fairy-Stockfish =====
+
+// Анализ идёт в фоне и кэшируется: можно уйти с экрана и вернуться — посчитанное не пропадёт
+object VariantAnalyzer {
+	class State(val n: Int) {
+		val evals = HashMap<Int, Int>() // оценка позиции после i полуходов, за белых
+		val best = HashMap<Int, String>() // лучший ход Fairy в позиции i
+		val second = HashMap<Int, Int>() // оценка второй линии (для «отличного» хода)
+		@Volatile var running = false
+		var error: String? = null
+		val complete get() = evals.size >= n
+	}
+
+	private val states = HashMap<String, State>()
+	private val listeners = HashMap<String, MutableList<() -> Unit>>()
+
+	fun key(v: Variant, moves: List<IntArray>) = (v.json().toString() + moves.joinToString(";") { it.joinToString(",") }).hashCode().toString()
+	fun state(key: String) = states[key]
+	fun listen(key: String, f: () -> Unit) { listeners.getOrPut(key) { ArrayList() }.add(f) }
+	fun unlisten(key: String, f: () -> Unit) { listeners[key]?.remove(f) }
+	private fun notify(key: String) = listeners[key]?.toList()?.forEach { it() }
+
+	fun start(ctx: android.content.Context, key: String, plan: FairyVariant.Plan, positions: List<VPos>) {
+		val st = states.getOrPut(key) { State(positions.size) }
+		if (st.running || st.complete) return
+		st.running = true; st.error = null
+		val app = ctx.applicationContext
+		val eng = Stockfish.fairyReview
+		eng.exec.execute {
+			for (i in positions.indices) {
+				if (st.evals.containsKey(i)) continue
+				val p = positions[i]
+				val r = p.result()
+				if (r >= 0) {
+					val score = when (r) { 0 -> 10000; 1 -> -10000; else -> 0 }
+					BotRunner.main.post { st.evals[i] = score; notify(key) }
+					continue
+				}
+				val lines = eng.customLines(app, plan.section, plan.ini, FairyVariant.fen(p, plan), p.turn == 0, 500, 2)
+				if (lines.isNullOrEmpty()) {
+					BotRunner.main.post { st.running = false; st.error = eng.lastError ?: "Fairy-Stockfish не ответил"; notify(key) }
+					return@execute
+				}
+				BotRunner.main.post {
+					st.evals[i] = lines[0].score
+					st.best[i] = lines[0].move
+					lines.getOrNull(1)?.let { st.second[i] = it.score }
+					notify(key)
+				}
+			}
+			BotRunner.main.post { st.running = false; notify(key) }
+		}
+	}
+
+	// сколько материала сторона отдаёт ходом: что может забрать соперник сразу после, минус то, что взяли сами
+	private fun sacrifice(before: VPos, m: Int): Int {
+		val mover = before.turn
+		if (before.def(before.sq[VM.from(m)]).royal) return 0
+		val capVal = before.sq[VM.to(m)].let { if (it != 0) before.def(it).value else 0 } + if (VM.flags(m) and VM.EP != 0) 100 else 0
+		val p = before.copy(); p.make(m)
+		if (p.result() >= 0) return 0
+		var loss = 0
+		for (c in p.legal()) {
+			val victim = p.sq[VM.to(c)]
+			if (victim == 0 || p.color(victim) != mover || p.def(victim).royal) continue
+			val q = p.copy(); q.make(c)
+			val attacker = p.def(p.sq[VM.from(c)]).value
+			val gain = p.def(victim).value - (if (q.attacked(VM.to(c), mover)) attacker else 0)
+			loss = maxOf(loss, gain)
+		}
+		return loss - capVal
+	}
+
+	// тип хода по тем же правилам, что в обычном разборе (Judge.classify)
+	fun classify(before: VPos, m: Int, played: Int, st: State, i: Int, plan: FairyVariant.Plan): MoveClass? {
+		val wbScore = st.evals[i] ?: return null
+		val after = st.evals[i + 1] ?: return null
+		if (before.legal().size == 1) return MoveClass.FORCED
+		val sign = if (before.turn == 0) 1 else -1
+		val wb = ru.cersat.chessics.bots.Judge.winPct(wbScore * sign)
+		val wa = ru.cersat.chessics.bots.Judge.winPct(after * sign)
+		val loss = maxOf(0.0, wb - wa)
+		val isBest = st.best[i]?.let { FairyVariant.parse(before, plan, it) } == played
+		if ((isBest || loss < 2) && wa >= 45 && wb < 97 && sacrifice(before, m) >= 200) return MoveClass.BRILLIANT
+		if (isBest) st.second[i]?.let { s2 -> if (wb - ru.cersat.chessics.bots.Judge.winPct(s2 * sign) >= 15 && wb < 97) return MoveClass.GREAT }
+		return when {
+			isBest || loss < 1 -> MoveClass.BEST
+			loss < 3 -> MoveClass.EXCELLENT
+			loss < 10 -> MoveClass.GOOD
+			loss < 20 -> MoveClass.INACCURACY
+			loss < 30 -> MoveClass.MISTAKE
+			else -> MoveClass.BLUNDER
+		}
+	}
+}
+
+class VariantReviewScreen(a: MainActivity, private val v: Variant, private val moves: List<IntArray>, private val title: String, private val resultLine: String) : Screen(a) {
 	private val positions = ArrayList<VPos>()
 	private val played = ArrayList<Int>()
 	private val names = ArrayList<String>()
 	private var ply = 0
 	private val plan = FairyVariant.plan(v)
-	private val evals = HashMap<Int, Int>() // оценка позиции после ply полуходов, за белых
-	private val best = HashMap<Int, String>() // лучший ход Fairy в позиции
-	private var running = false
-	private var token = 0
+	private val key = VariantAnalyzer.key(v, moves)
+	private val classes = HashMap<Int, MoveClass>() // тип хода i (0 — первый ход)
 	private val board = VBoardView(a)
-	private val bar = EvalBar(a)
+	private val graph = EvalGraph(a)
+	private lateinit var info: TextView
+	private lateinit var list: LinearLayout
+	private val listener: () -> Unit = { show(false) }
 
 	init {
 		var p = VPos(v)
@@ -812,91 +914,125 @@ class VariantReviewScreen(a: MainActivity, private val v: Variant, private val m
 			p = p.copy(); p.make(m)
 			positions.add(p)
 		}
-		ply = played.size
-	}
-
-	// значок хода по потере в оценке (как в обычном разборе: ★ — ход Fairy)
-	private fun mark(i: Int): String {
-		val before = evals[i - 1] ?: return ""; val after = evals[i] ?: return ""
-		val mover = positions[i - 1].turn
-		val bm = best[i - 1]
-		if (bm != null && plan.plan != null && FairyVariant.parse(positions[i - 1], plan.plan, bm) == played[i - 1]) return "★"
-		fun cap(x: Int) = x.coerceIn(-1500, 1500)
-		val loss = (cap(before) - cap(after)) * (if (mover == 0) 1 else -1)
-		return when { loss >= 300 -> "??"; loss >= 150 -> "?"; loss >= 70 -> "?!"; else -> "" }
 	}
 
 	override fun build(): View {
-		val root = ui.col(10, 8)
-		root.addView(ui.row(8, ui.button("‹", false) { a.pop() }, ui.col(0, 0, ui.text(title, 15f, bold = true), ui.sub(resultText, 12f))))
-		root.addView(bar.detached(), ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(18)))
+		val box = ui.col(12, 10)
+		box.addView(ui.row(8, ui.button("‹", false) { a.pop() }, ui.text("Анализ · $title", 16f, bold = true)))
+		if (resultLine.isNotEmpty()) box.addView(ui.sub(resultLine))
 		board.v = v
-		root.addView(board.detached(), ui.lp())
-		val nav = ui.row(6)
-		for ((label, f) in listOf<Pair<String, () -> Unit>>("⏮" to { ply = 0 }, "◀" to { if (ply > 0) ply-- }, "▶" to { if (ply < played.size) ply++ }, "⏭" to { ply = played.size }))
-			nav.addView(ui.button(label, false) { f(); a.refresh() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-		root.addView(nav, ui.lp())
+		box.addView(board.detached(), ui.lp())
+		graph.onPick = { ply = it.coerceIn(0, played.size); show(true) }
+		box.addView(graph.detached(), ui.lp(h = ui.dp(70)))
+		info = ui.text("", 14f, ui.t.text)
+		box.addView(info, ui.lp())
+		val nav = ui.row(8)
+		nav.addView(ui.button("⏮", false) { ply = 0; show(true) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		nav.addView(ui.button("◀", false) { if (ply > 0) ply--; show(true) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		nav.addView(ui.button("▶", false) { if (ply < played.size) ply++; show(true) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		nav.addView(ui.button("⏭", false) { ply = played.size; show(true) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		box.addView(nav, ui.lp())
+		list = ui.col(0, 6)
+		box.addView(list, ui.lp())
+		VariantAnalyzer.unlisten(key, listener)
+		VariantAnalyzer.listen(key, listener)
+		plan.plan?.let { VariantAnalyzer.start(a, key, it, positions) }
+		show(false)
+		return ui.scroll(box)
+	}
+
+	private fun classOf(i: Int): MoveClass? {
+		classes[i]?.let { return it }
+		val st = VariantAnalyzer.state(key) ?: return null
+		val pl = plan.plan ?: return null
+		val c = VariantAnalyzer.classify(positions[i], played[i], played[i], st, i, pl) ?: return null
+		classes[i] = c
+		return c
+	}
+
+	// animate — пользователь перешёл на ход: бриллиант и отличный ход празднуем вспышкой
+	private fun show(animate: Boolean) {
+		val st = VariantAnalyzer.state(key)
 		val p = positions[ply]
+		val last = if (ply > 0) played[ply - 1] else 0
 		board.sq = p.sq
-		board.lastMove = if (ply > 0) played[ply - 1] else 0
+		board.lastMove = last
 		board.check = p.royals(p.turn).firstOrNull { p.attacked(it, 1 - p.turn) } ?: -1
+		board.fx.clear()
+		board.hint = 0
+		if (plan.plan == null) {
+			info.text = "Анализ недоступен: Fairy-Stockfish не понимает этот вариант (${plan.reason})."
+			graph.values = emptyList()
+			buildList(null); board.invalidate(); return
+		}
+		if (st == null) { info.text = "Fairy-Stockfish анализирует в фоне…"; buildList(null); board.invalidate(); return }
+		// график — по уже посчитанным подряд позициям
+		val seq = ArrayList<Int>()
+		while (st.evals.containsKey(seq.size)) seq.add(st.evals[seq.size]!!)
+		graph.values = seq
+		graph.cursor = if (st.evals.containsKey(ply)) ply else -1
+		val cls = if (ply > 0) classOf(ply - 1) else null
+		if (cls != null && last != 0) {
+			if (animate && (cls == MoveClass.BRILLIANT || cls == MoveClass.GREAT)) board.fx.celebrate(VM.to(last), cls)
+			else board.fx.set(VM.to(last), cls)
+		}
+		val bm = st.best[ply]?.let { FairyVariant.parse(p, plan.plan, it) } ?: 0
+		if (bm != 0 && ply < played.size) board.hint = bm
 		board.invalidate()
-		val e = evals[ply]
-		bar.cp = e?.coerceIn(-3000, 3000) ?: p.material().coerceIn(-3000, 3000)
-		bar.label = e?.let { if (kotlin.math.abs(it) >= 9000) "M" else "%+.1f".format(it / 100f) } ?: "%+.1f".format(p.material() / 100f)
-		val info = StringBuilder(if (ply == 0) "Начальная позиция" else "Ход ${(ply + 1) / 2}${if (ply % 2 == 1) "." else "…"} ${names[ply - 1]} ${mark(ply)}")
-		best[ply]?.let { bm -> plan.plan?.let { pl -> FairyVariant.parse(p, pl, bm).takeIf { it != 0 }?.let { info.append("\nЛучший ход здесь: ${p.moveName(it)}") } } }
-		root.addView(ui.text(info.toString(), 14f, ui.t.text, true, Gravity.CENTER), ui.lp())
-		when {
-			plan.plan == null -> root.addView(ui.sub("Анализ недоступен: Fairy-Stockfish не понимает этот вариант (${plan.reason})."))
-			running -> root.addView(ui.sub("Fairy-Stockfish считает: ${evals.size} из ${positions.size} позиций. Уже посчитанное можно смотреть."))
-			evals.size < positions.size -> root.addView(ui.button("🔍 Анализ Fairy-Stockfish") { analyse() })
-			else -> root.addView(ui.sub("Анализ готов: ★ — ход как у Fairy, ?! неточность, ? ошибка, ?? зевок."))
-		}
-		// список ходов: нажатие — переход к ходу
-		val list = ui.col(0, 2)
-		for (i in names.indices step 2) {
-			val r = ui.row(6)
-			r.addView(ui.text("${i / 2 + 1}.", 13f, ui.t.sub), LinearLayout.LayoutParams(ui.dp(36), ViewGroup.LayoutParams.WRAP_CONTENT))
-			for (k in i..minOf(i + 1, names.size - 1)) {
-				val t = ui.text("${names[k]} ${mark(k + 1)}", 13f, if (ply == k + 1) ui.t.accent else ui.t.text, ply == k + 1)
-				t.setOnClickListener { ply = k + 1; a.refresh() }
-				r.addView(t, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-			}
-			list.addView(r)
-		}
-		root.addView(list, ui.lp())
-		return ui.scroll(root)
+		var t = st.evals[ply]?.let { e -> "Оценка: " + if (kotlin.math.abs(e) >= 9000) "мат" else String.format(java.util.Locale.US, "%+.2f", e / 100.0) }
+			?: "Эта позиция ещё считается…"
+		if (cls != null) t += " · ${names[ply - 1]} ${cls.symbol} — ${cls.title}"
+		if (bm != 0) t += "\nЛучший ход здесь: ${p.moveName(bm)} (синяя стрелка)"
+		if (st.error != null) t += "\nАнализ остановился: ${st.error}"
+		else if (!st.complete) t += "\nFairy-Stockfish досчитывает в фоне: ${st.evals.size} / ${positions.size}"
+		info.text = t
+		buildList(st)
 	}
 
-	private fun analyse() {
-		val pl = plan.plan ?: return
-		running = true
-		val my = ++token
-		a.refresh()
-		val eng = Stockfish.fairyReview
-		eng.exec.execute {
-			for (i in positions.indices) {
-				if (token != my) return@execute
-				if (evals.containsKey(i)) continue
-				val p = positions[i]
-				val r = p.result()
-				val line = if (r >= 0) null else eng.customEval(a, pl.section, pl.ini, FairyVariant.fen(p, pl), p.turn == 0, 400)
-				val score = when {
-					r == 0 -> 10000; r == 1 -> -10000; r == 2 -> 0
-					line == null -> { BotRunner.main.post { if (token == my) { running = false; a.toast("Fairy-Stockfish не ответил: ${eng.lastError ?: "без ответа"}"); a.refresh() } }; return@execute }
-					else -> line.score
-				}
-				BotRunner.main.post {
-					if (token != my) return@post
-					evals[i] = score
-					line?.move?.takeIf { it.isNotEmpty() }?.let { best[i] = it }
-					if (i == positions.size - 1) running = false
-					a.refresh()
-				}
+	private fun buildList(st: VariantAnalyzer.State?) {
+		list.removeAllViews()
+		if (st != null) for (side in 0..1) {
+			var acc = 0.0; var cnt = 0
+			val counts = HashMap<MoveClass, Int>()
+			for (i in played.indices) {
+				if (positions[i].turn != side) continue
+				val c = classOf(i) ?: continue
+				val sign = if (side == 0) 1 else -1
+				val l = maxOf(0.0, ru.cersat.chessics.bots.Judge.winPct(st.evals[i]!! * sign) - ru.cersat.chessics.bots.Judge.winPct(st.evals[i + 1]!! * sign))
+				acc += (103.1668 * Math.exp(-0.04354 * l) - 3.1669).coerceIn(0.0, 100.0); cnt++
+				counts[c] = (counts[c] ?: 0) + 1
 			}
+			val name = if (side == 0) "Белые" else "Чёрные"
+			list.addView(ui.text(String.format(java.util.Locale.US, "%s · %.0f%%", name, if (cnt > 0) acc / cnt else 0.0), 13f, ui.t.text, true))
+			val chipsRow = ui.row(4)
+			for (c in MoveClass.values()) {
+				val n = counts[c] ?: 0
+				if (n == 0) continue
+				chipsRow.addView(ui.text("${c.symbol} $n", 12f, 0xFFFFFFFF.toInt(), true).apply {
+					setPadding(ui.dp(8), ui.dp(3), ui.dp(8), ui.dp(3)); background = ui.round(c.color, 10f)
+				})
+			}
+			list.addView(ui.hscroll(chipsRow))
 		}
+		// ходы: цвет и значок типа, нажатие — переход
+		var row: LinearLayout? = null
+		for (i in played.indices) {
+			if (i % 2 == 0) {
+				row = ui.row(6)
+				row.addView(ui.text("${i / 2 + 1}.", 13f, ui.t.sub), LinearLayout.LayoutParams(ui.dp(40), ViewGroup.LayoutParams.WRAP_CONTENT))
+				list.addView(row)
+			}
+			val cls = if (st != null) classOf(i) else null
+			val sel = i + 1 == ply
+			val tv = ui.text(names[i] + (cls?.let { " " + it.symbol } ?: ""), 14f,
+				if (sel) Ui.contrast(ui.t.accent) else (cls?.takeIf { it in listOf(MoveClass.BRILLIANT, MoveClass.GREAT, MoveClass.INACCURACY, MoveClass.MISTAKE, MoveClass.BLUNDER) }?.color ?: ui.t.text), true)
+			tv.setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
+			val target = i + 1
+			ui.clickable(tv, if (sel) ui.t.accent else ui.t.card, 8f) { ply = target; show(true) }
+			row!!.addView(tv, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		}
+		if (played.size % 2 == 1 && row != null) row.addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
 	}
 
-	override fun dispose() { token++; Stockfish.fairyReview.stop() }
+	override fun dispose() { VariantAnalyzer.unlisten(key, listener) }
 }

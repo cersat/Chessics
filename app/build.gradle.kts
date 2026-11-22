@@ -15,8 +15,8 @@ android {
 		applicationId = "ru.cersat.chessics"
 		minSdk = 26
 		targetSdk = 36
-		versionCode = 18
-		versionName = "1.2.2"
+		versionCode = 19
+		versionName = "1.2.3"
 		ndk { abiFilters += listOf("arm64-v8a") }
 	}
 
