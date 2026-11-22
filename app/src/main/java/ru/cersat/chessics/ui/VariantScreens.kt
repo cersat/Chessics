@@ -609,15 +609,15 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 	override fun build(): View {
 		val root = ui.col(10, 8)
 		root.addView(ui.row(8, ui.button("‹", false) { a.goBack() }, ui.text(v.name, 15f, bold = true)))
-		root.addView(bar, ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(18)))
+		root.addView(bar.detached(), ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(18)))
 		board.v = v
 		board.flipped = seats[0] != "H" && seats[1] == "H"
 		board.canMove = { result < 0 && seats[pos.turn] == "H" && !thinking }
 		board.onMove = { ms -> human(ms) }
-		root.addView(board, ui.lp())
+		root.addView(board.detached(), ui.lp())
 		status = ui.text("", 15f, ui.t.text, true, Gravity.CENTER)
 		root.addView(status, ui.lp())
-		root.addView(neuralBox, ui.lp())
+		root.addView(neuralBox.detached(), ui.lp())
 		controls = ui.row(8)
 		root.addView(controls, ui.lp())
 		moves = ui.sub("")
@@ -751,9 +751,14 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 		Sounds.play(a, Sounds.Kind.END)
 		redraw()
 		val head = when (r) { 2 -> "Ничья"; 0 -> "Победа белых"; else -> "Победа чёрных" }
-		if (link != null) a.dialog(head, ui.sub(why.replaceFirstChar { it.uppercase() }, 15f), "Посмотреть доску" to {}, "В меню" to { a.showTab(2) })
-		else a.dialog(head, ui.sub(why.replaceFirstChar { it.uppercase() }, 15f),
-			"Посмотреть доску" to {}, "Ещё партия" to { a.replace(VariantGameScreen(a, base, white, black)) }, "В меню" to { a.showTab(2) })
+		val body = ui.sub(why.replaceFirstChar { it.uppercase() }, 15f)
+		if (link != null) a.dialog(head, body, "Посмотреть доску" to {}, "Анализ партии" to { openReview(head, why) }, "В меню" to { a.showTab(2) })
+		else a.dialog(head, body, "Анализ партии" to { openReview(head, why) }, "Ещё партия" to { a.replace(VariantGameScreen(a, base, white, black)) }, "В меню" to { a.showTab(2) })
+	}
+
+	private fun openReview(head: String, why: String) {
+		fun name(c: Int) = if (seats[c] == "L") remoteName.ifEmpty { "Соперник" } else VBots.title(seats[c])
+		a.push(VariantReviewScreen(a, v, played.map { intArrayOf(VM.from(it), VM.to(it), VM.promo(it)) }, "${name(0)} — ${name(1)} · ${v.name}", "$head · $why"))
 	}
 
 	// ход нейросети: промпт → ответ → проверка
@@ -824,9 +829,9 @@ class VariantReviewScreen(a: MainActivity, private val v: Variant, private val m
 	override fun build(): View {
 		val root = ui.col(10, 8)
 		root.addView(ui.row(8, ui.button("‹", false) { a.pop() }, ui.col(0, 0, ui.text(title, 15f, bold = true), ui.sub(resultText, 12f))))
-		root.addView(bar, ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(18)))
+		root.addView(bar.detached(), ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(18)))
 		board.v = v
-		root.addView(board, ui.lp())
+		root.addView(board.detached(), ui.lp())
 		val nav = ui.row(6)
 		for ((label, f) in listOf<Pair<String, () -> Unit>>("⏮" to { ply = 0 }, "◀" to { if (ply > 0) ply-- }, "▶" to { if (ply < played.size) ply++ }, "⏭" to { ply = played.size }))
 			nav.addView(ui.button(label, false) { f(); a.refresh() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))

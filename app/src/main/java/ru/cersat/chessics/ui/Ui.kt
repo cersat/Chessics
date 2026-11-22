@@ -135,3 +135,6 @@ class Ui(val ctx: Context) {
 		}
 	}
 }
+
+// Вид, который экран хранит между перерисовками (доска, полоса), ещё сидит в старом дереве — отцепляем перед добавлением
+fun <T : android.view.View> T.detached(): T { (parent as? android.view.ViewGroup)?.removeView(this); return this }

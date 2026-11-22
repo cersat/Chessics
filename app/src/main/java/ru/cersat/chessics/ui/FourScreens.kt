@@ -227,7 +227,7 @@ class FourGameScreen(a: MainActivity, private val seats: List<String>) : Screen(
 		root.addView(bars, ui.lp())
 		board.canMove = { result < 0 && seats[pos.turn] == "H" && !thinking }
 		board.onMove = { m -> onHuman(m) }
-		root.addView(board, ui.lp())
+		root.addView(board.detached(), ui.lp())
 		status = ui.text("", 15f, ui.t.text, true, Gravity.CENTER)
 		root.addView(status, ui.lp())
 		controls = ui.row(8)

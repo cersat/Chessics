@@ -220,7 +220,7 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 		board.canMove = { c -> c == hero && !solved && !busy }
 		board.onMove = { m -> onMove(m) }
 		board.setPosition(pos.copy())
-		box.addView(board, ui.lp())
+		box.addView(board.detached(), ui.lp())
 		status = ui.text("", 16f, ui.t.text, true, Gravity.CENTER)
 		box.addView(status, ui.lp())
 		controls = ui.row(8)
@@ -413,7 +413,7 @@ class ReviewScreen(a: MainActivity, private val startFen: String, private val uc
 		if (resultLine.isNotEmpty()) box.addView(ui.sub(resultLine))
 		board.canMove = { false }
 		board.showCoords = a.store.flag("coords", true)
-		box.addView(board, ui.lp())
+		box.addView(board.detached(), ui.lp())
 		graph.onPick = { ply = it; show(true) }
 		box.addView(graph, ui.lp(h = ui.dp(70)))
 		info = ui.text("", 14f, ui.t.text)
@@ -585,7 +585,7 @@ class StormScreen(a: MainActivity) : Screen(a) {
 		board.showLegal = st.flag("legal", true)
 		board.canMove = { c -> running && !busy && c == hero && pos.side == hero }
 		board.onMove = { m -> onMove(m) }
-		box.addView(board, ui.lp())
+		box.addView(board.detached(), ui.lp())
 		controls = ui.row(8)
 		box.addView(controls, ui.lp())
 		refreshInfo()

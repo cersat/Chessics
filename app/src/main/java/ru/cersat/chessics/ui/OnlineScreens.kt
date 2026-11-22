@@ -354,7 +354,7 @@ class OnlineGameScreen(a: MainActivity, private val gameId: String) : Screen(a) 
 		board.canMove = { c -> c == my && live() && loaded && game.pos.side == my }
 		board.onMove = { m -> onMove(m) }
 		board.premoveColor = { if (st.flag("premove", true) && live() && loaded && game.pos.side != my) my else -1 }
-		root.addView(board, ui.lp())
+		root.addView(board.detached(), ui.lp())
 		root.addView(bottomBar, ui.lp())
 		root.addView(info, ui.lp())
 		root.addView(controls, ui.lp())
