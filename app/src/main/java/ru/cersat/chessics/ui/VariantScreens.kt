@@ -261,11 +261,12 @@ private fun pasteText(a: MainActivity): String =
 private fun winText(v: Variant) = Variant.WIN_NAMES[v.win].let { if (v.win == Variant.WIN_CHECKS) it.replace("N", "${v.nChecks}") else it }
 
 class VariantListScreen(a: MainActivity) : Screen(a) {
+	override val tab = 2
 	private val st = a.store
 
 	override fun build(): View {
 		val box = ui.col(16, 12)
-		box.addView(ui.row(10, ui.button("‹", false) { a.pop() }, ui.title("Конструктор вариантов")))
+		box.addView(ui.title("Конструктор вариантов"))
 		box.addView(ui.sub("Своя доска до 12×12, заблокированные клетки, свои фигуры с любыми ходами и правила победы. Играть можно против ботов или вдвоём."))
 		box.addView(ui.row(8,
 			ui.button("＋ Новый") { newVariant() },
@@ -298,8 +299,12 @@ class VariantListScreen(a: MainActivity) : Screen(a) {
 		val body = ui.col(0, 8)
 		var dlg: android.app.AlertDialog? = null
 		fun start(v: Variant) { dlg?.dismiss(); val list = VariantStore.list(st); list.add(v); VariantStore.save(st, list); a.push(VariantEditorScreen(a, list.size - 1)) }
-		body.addView(ui.button("С классических шахмат", false) { start(Variant.classic().also { it.name = "Мой вариант" }) })
-		body.addView(ui.button("С мини-доски 6×6", false) { start(Variant.mini().also { it.name = "Мой вариант" }) })
+		body.addView(ui.sub("Образцы — встроенные варианты Chessics:"))
+		body.addView(ui.button("Классические шахматы", false) { start(Variant.classic()) })
+		body.addView(ui.button("Chess960", false) { start(Variant.chess960()) })
+		body.addView(ui.button("Три шаха", false) { start(Variant.threeCheck()) })
+		body.addView(ui.button("Царь горы", false) { start(Variant.koth()) })
+		body.addView(ui.button("Мини 6×6", false) { start(Variant.mini()) })
 		body.addView(ui.button("С пустой доски 8×8", false) {
 			start(Variant("Мой вариант", 8, 8, PieceDef.standard(), IntArray(64), BooleanArray(64)).also { it.promo.addAll(listOf("Ферзь", "Ладья", "Слон", "Конь")) })
 		})
@@ -377,10 +382,11 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		rc.addView(ui.sub("Пат"))
 		rc.addView(ui.chips(Variant.STALEMATE_NAMES.mapIndexed { i, n -> n to (i == v.stalemate) }, 3) { v.stalemate = it; save(); a.refresh() })
 		rc.addView(ui.space(6))
-		rc.addView(ui.chips(listOf("Рокировка" to v.castling, "Взятие на проходе" to v.enPassant, "Двойной ход пешки" to v.pawnDouble), 3) {
-			when (it) { 0 -> v.castling = !v.castling; 1 -> v.enPassant = !v.enPassant; else -> v.pawnDouble = !v.pawnDouble }
+		rc.addView(ui.chips(listOf("Рокировка" to v.castling, "Взятие на проходе" to v.enPassant, "Двойной ход пешки" to v.pawnDouble, "Перемешивать первую линию" to v.shuffle), 2) {
+			when (it) { 0 -> v.castling = !v.castling; 1 -> v.enPassant = !v.enPassant; 2 -> v.pawnDouble = !v.pawnDouble; else -> v.shuffle = !v.shuffle }
 			save(); a.refresh()
 		})
+		if (v.shuffle) rc.addView(ui.sub("Перед каждой партией фигуры первой линии встают случайно, у чёрных — зеркально. Одинаковые фигуры, ходящие только по своему цвету (как слоны), — на клетки разного цвета, король — между двумя рокирующимися фигурами. Рокировка — по правилам конструктора: король идёт на две клетки к ладье."))
 		rc.addView(ui.space(6))
 		rc.addView(ui.sub("Пешки превращаются на последней горизонтали в:"))
 		val promoable = v.pieces.filter { !it.royal && !it.pawn }
@@ -536,7 +542,10 @@ class VariantSetupScreen(a: MainActivity, private val index: Int) : Screen(a) {
 	}
 }
 
-class VariantGameScreen(a: MainActivity, private val v: Variant, private val white: String, private val black: String) : Screen(a) {
+// Сиденья: "H" человек, "N" нейросеть через промпт, "L" соперник по сети, остальные — боты (VBots)
+class VariantGameScreen(a: MainActivity, private val base: Variant, private val white: String, private val black: String,
+	private val link: ru.cersat.chessics.data.Link? = null, private val remoteName: String = "", dealt: Boolean = false) : Screen(a) {
+	private val v: Variant = if (dealt) base else base.dealt()
 	private val pos = VPos(v).also { it.record() }
 	init {
 		// пасхалка: фигура без единого хода стоит на доске
@@ -549,7 +558,28 @@ class VariantGameScreen(a: MainActivity, private val v: Variant, private val whi
 		if (s.startsWith("F")) fairyPlan?.let { FairyVBot(a, s.drop(1).toIntOrNull() ?: 0, it) { msg -> BotRunner.main.post { a.toast(msg) } } } ?: VMaterial(3)
 		else VBots.bot(s)
 	}
+	private var linkLost = false
+	private val remoteColor = seats.indexOf("L")
+	private val neuralBox by lazy { ui.col(0, 0) }
+
+	init {
+		link?.onClosed = { BotRunner.main.post { if (result < 0) { linkLost = true; a.toast("Соединение с соперником потеряно"); redraw() } } }
+		link?.attach { o -> onRemote(o) }
+	}
+
+	private fun onRemote(o: JSONObject) {
+		when (o.optString("t")) {
+			"vmove" -> {
+				if (result >= 0 || pos.turn != remoteColor || o.optInt("ply") != log.size) return
+				val m = pos.legal().firstOrNull { VM.from(it) == o.optInt("f") && VM.to(it) == o.optInt("to") && VM.promo(it) == o.optInt("p") }
+				if (m == null) { a.toast("Соперник прислал ход, которого нет по правилам — партии разошлись"); return }
+				apply(m)
+			}
+			"resign" -> finish(remoteColor xor 1, "соперник сдался")
+		}
+	}
 	private val log = ArrayList<String>()
+	private val logEn = ArrayList<String>() // те же ходы латиницей — для промпта нейросети
 	private var lastMove = 0
 	private var result = -1
 	private var reason = ""
@@ -572,6 +602,7 @@ class VariantGameScreen(a: MainActivity, private val v: Variant, private val whi
 		root.addView(board, ui.lp())
 		status = ui.text("", 15f, ui.t.text, true, Gravity.CENTER)
 		root.addView(status, ui.lp())
+		root.addView(neuralBox, ui.lp())
 		controls = ui.row(8)
 		root.addView(controls, ui.lp())
 		moves = ui.sub("")
@@ -592,20 +623,30 @@ class VariantGameScreen(a: MainActivity, private val v: Variant, private val whi
 		bar.label = when (result) { 0 -> "1-0"; 1 -> "0-1"; 2 -> "½"; else -> "%+.1f".format(pos.material() / 100f) }
 		val side = if (pos.turn == 0) "белые" else "чёрные"
 		status.text = when (result) {
-			-1 -> (if (thinking) "${side.replaceFirstChar { it.uppercase() }} думают…" else "Ход: $side") +
+			-1 -> (when {
+				linkLost -> "Соединение потеряно"
+				thinking -> "${side.replaceFirstChar { it.uppercase() }} думают…"
+				seats[pos.turn] == "N" -> "Ждём ход нейросети"
+				seats[pos.turn] == "L" -> "Ход соперника"
+				else -> "Ход: $side"
+			}) +
 				(if (board.check >= 0) " · шах!" else "") +
 				(if (v.win == Variant.WIN_CHECKS) " · шахи ${pos.checks[0]}:${pos.checks[1]} из ${v.nChecks}" else "")
 			2 -> "Ничья · $reason"
 			else -> "Победа ${if (result == 0) "белых" else "чёрных"} · $reason"
 		}
 		moves.text = log.chunked(2).mapIndexed { i, p -> "${i + 1}. ${p.joinToString(" ")}" }.joinToString("   ")
+		updateNeural()
 		controls.removeAllViews()
 		controls.addView(ui.button("⇅ Перевернуть", false) { board.flipped = !board.flipped; board.invalidate() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		val humans = seats.indices.filter { seats[it] == "H" }
 		if (result < 0 && humans.size == 1) controls.addView(ui.button("⚑ Сдаться", false) {
-			a.dialog("Сдаться?", ui.sub("Партия будет проиграна."), "Сдаться" to { finish(1 - humans[0], "сдача") }, "Играть дальше" to {})
+			a.dialog("Сдаться?", ui.sub("Партия будет проиграна."), "Сдаться" to {
+				link?.send(JSONObject().put("t", "resign"))
+				finish(1 - humans[0], "сдача")
+			}, "Играть дальше" to {})
 		}, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-		if (result >= 0) controls.addView(ui.button("Ещё партия") { a.replace(VariantGameScreen(a, v, white, black)) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		if (result >= 0 && link == null) controls.addView(ui.button("Ещё партия") { a.replace(VariantGameScreen(a, base, white, black)) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 	}
 
 	private fun human(ms: List<Int>) {
@@ -624,8 +665,10 @@ class VariantGameScreen(a: MainActivity, private val v: Variant, private val whi
 
 	private fun apply(m: Int) {
 		if (result >= 0 || m !in pos.legal()) return
+		if (link != null && seats[pos.turn] == "H") link.send(JSONObject().put("t", "vmove").put("f", VM.from(m)).put("to", VM.to(m)).put("p", VM.promo(m)).put("ply", log.size))
 		val cap = pos.sq[VM.to(m)] != 0 || VM.flags(m) and VM.EP != 0
 		log.add(pos.moveName(m))
+		logEn.add(Neural.name(pos, m))
 		pos.make(m); pos.record()
 		lastMove = m
 		val check = pos.inCheck(pos.turn)
@@ -677,9 +720,35 @@ class VariantGameScreen(a: MainActivity, private val v: Variant, private val whi
 		Sounds.play(a, Sounds.Kind.END)
 		redraw()
 		val head = when (r) { 2 -> "Ничья"; 0 -> "Победа белых"; else -> "Победа чёрных" }
-		a.dialog(head, ui.sub(why.replaceFirstChar { it.uppercase() }, 15f),
-			"Посмотреть доску" to {}, "Ещё партия" to { a.replace(VariantGameScreen(a, v, white, black)) }, "В меню" to { a.showTab(0) })
+		if (link != null) a.dialog(head, ui.sub(why.replaceFirstChar { it.uppercase() }, 15f), "Посмотреть доску" to {}, "В меню" to { a.showTab(2) })
+		else a.dialog(head, ui.sub(why.replaceFirstChar { it.uppercase() }, 15f),
+			"Посмотреть доску" to {}, "Ещё партия" to { a.replace(VariantGameScreen(a, base, white, black)) }, "В меню" to { a.showTab(2) })
 	}
 
-	override fun dispose() { token++; if (fairyPlan != null) Stockfish.fairyCustom.stop() }
+	// ход нейросети: промпт → ответ → проверка
+	private fun updateNeural() {
+		neuralBox.removeAllViews()
+		if (result >= 0 || seats[pos.turn] != "N" || thinking) return
+		neuralBox.addView(Neural.panel(a, if (pos.turn == 0) "белые" else "чёрные",
+			prompt = { Neural.prompt(pos, logEn) },
+			tryAnswer = { text ->
+				val legal = pos.legal()
+				val i = Neural.pick(text, legal.map { Neural.name(pos, it) })
+				if (i == null) "Не понял ответ: в нём нет номера хода из списка. Скопируй промпт ещё раз и попроси ответить JSON."
+				else { apply(legal[i]); null }
+			},
+			fallback = {
+				val p = pos.copy(); val my = token
+				BotRunner.exec.execute {
+					val m = VMaterial(3).pick(p) { token != my }
+					BotRunner.main.post { if (token == my && m != 0) apply(m) }
+				}
+			}))
+	}
+
+	override fun dispose() {
+		token++
+		if (fairyPlan != null) Stockfish.fairyCustom.stop()
+		if (link != null) { if (result < 0) link.send(JSONObject().put("t", "resign")); link.close() }
+	}
 }

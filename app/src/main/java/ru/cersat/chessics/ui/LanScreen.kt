@@ -56,9 +56,17 @@ class LanScreen(a: MainActivity, private val auto: JSONObject? = null) : Screen(
 		host.addView(ui.space(8))
 		host.addView(ui.chips(GameConfig.CLOCKS.mapIndexed { i, (m, inc) -> GameConfig.clockLabel(m, inc) to (i == clock) }, 4) { st.setStr("lanClock", "$it"); a.refresh() })
 		host.addView(ui.space(8))
-		host.addView(ui.chips(V.NAMES.mapIndexed { i, n -> n to (i == variant) }, 4) { st.setStr("lanVariant", "$it"); a.refresh() })
+		val customs = VariantStore.list(st)
+		val custom = st.str("lanCustom", "-1").toInt().takeIf { it in customs.indices } ?: -1
+		host.addView(ui.chips(V.NAMES.mapIndexed { i, n -> n to (custom < 0 && i == variant) }, 4) { st.setStr("lanVariant", "$it"); st.setStr("lanCustom", "-1"); a.refresh() })
+		if (customs.isNotEmpty()) {
+			host.addView(ui.space(8))
+			host.addView(ui.sub("Свои варианты из конструктора:"))
+			host.addView(ui.chips(customs.mapIndexed { i, cv -> cv.name to (i == custom) }, 2) { st.setStr("lanCustom", "$it"); a.refresh() })
+			if (custom >= 0) host.addView(ui.sub("Вариант целиком перешлётся сопернику, ставить его у себя не нужно. Часов в своих вариантах пока нет — контроль времени не действует."))
+		}
 		host.addView(ui.space(10))
-		host.addView(ui.button("Создать и ждать соперника") { st.setStr("lanName", nameField.text.toString().trim()); startHost(color, clock, variant) })
+		host.addView(ui.button("Создать и ждать соперника") { st.setStr("lanName", nameField.text.toString().trim()); startHost(color, clock, variant, if (custom >= 0) customs[custom] else null) })
 		box.addView(host)
 
 		// подключиться
@@ -137,18 +145,23 @@ class LanScreen(a: MainActivity, private val auto: JSONObject? = null) : Screen(
 		Lan.joinWifi(h, port, { l -> onGuestLink(l) }, { e -> dialog?.dismiss(); a.toast("Не удалось подключиться: $e") })
 	}
 
-	private fun startHost(color: Int, clock: Int, variant: Int) {
+	private fun startHost(color: Int, clock: Int, variant: Int, custom: ru.cersat.chessics.chess.Variant? = null) {
 		if (bt && !btAllowed()) { askBt(); return }
 		val hostWhite = when (color) { 0 -> true; 1 -> false; else -> Math.random() < 0.5 }
 		val (m, inc) = GameConfig.CLOCKS[clock]
 		val fen = if (variant == V.CHESS960) V.random960() else Position.START
+		val dealt = custom?.dealt() // перемешанную расстановку выбирает хозяин и шлёт её как есть
 		val info = ui.sub("Жду соперника…", 14f)
 		dialog = a.dialog("Партия создана", info, "Отмена" to { waiting?.stop?.invoke(); waiting = null }, cancelable = false)
 		val onLink: (Link) -> Unit = { l ->
 			waiting = null
 			l.start()
 			l.attach { o ->
-				if (o.optString("t") == "hello") {
+				if (o.optString("t") == "hello" && dealt != null) {
+					l.send(JSONObject().put("t", "start").put("name", myName).put("custom", dealt.json()).put("hostWhite", hostWhite))
+					dialog?.dismiss()
+					a.push(VariantGameScreen(a, dealt, if (hostWhite) "H" else "L", if (hostWhite) "L" else "H", l, o.optString("name", "Соперник"), dealt = true))
+				} else if (o.optString("t") == "hello") {
 					l.send(JSONObject().put("t", "start").put("name", myName).put("fen", fen).put("variant", variant)
 						.put("m", m).put("inc", inc).put("hostWhite", hostWhite))
 					dialog?.dismiss()
@@ -167,7 +180,12 @@ class LanScreen(a: MainActivity, private val auto: JSONObject? = null) : Screen(
 	private fun onGuestLink(l: Link) {
 		l.start()
 		l.attach { o ->
-			if (o.optString("t") == "start") {
+			if (o.optString("t") == "start" && o.has("custom")) {
+				dialog?.dismiss()
+				val hostWhite = o.optBoolean("hostWhite")
+				val v = try { ru.cersat.chessics.chess.Variant.from(o.getJSONObject("custom")) } catch (e: Exception) { a.toast("Соперник прислал вариант, который не читается"); return@attach }
+				a.push(VariantGameScreen(a, v, if (hostWhite) "L" else "H", if (hostWhite) "H" else "L", l, o.optString("name", "Соперник"), dealt = true))
+			} else if (o.optString("t") == "start") {
 				dialog?.dismiss()
 				val hostWhite = o.optBoolean("hostWhite")
 				val cfg = GameConfig(if (hostWhite) Player(Player.Kind.REMOTE) else Player.HUMAN,

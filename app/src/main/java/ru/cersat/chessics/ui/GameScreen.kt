@@ -202,6 +202,8 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		root.addView(bottomBar, ui.lp())
 		if (st.flag("evalbar", true) && !cfg.hvh) root.addView(evalBar, ui.lp(h = ui.dp(16)))
 		root.addView(status, ui.lp())
+		neuralBox = ui.col(0, 0)
+		root.addView(neuralBox, ui.lp())
 		root.addView(movesScroll, ui.lp())
 		root.addView(controls, ui.lp())
 
@@ -229,6 +231,33 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		updateStatus()
 		buildMoves()
 		buildControls()
+		updateNeural()
+	}
+
+	// ---------- нейросеть через промпт ----------
+
+	private lateinit var neuralBox: LinearLayout
+
+	private fun updateNeural() {
+		if (!::neuralBox.isInitialized) return
+		neuralBox.removeAllViews()
+		if (result != null || viewPly >= 0 || playerOf(game.pos.side).kind != Player.Kind.NEURAL) return
+		val side = if (game.pos.side == P.WHITE) "белые" else "чёрные"
+		neuralBox.addView(Neural.panel(a, side,
+			prompt = { Neural.prompt(game.pos, cfg.variant, (0 until game.moves.size).map { game.san(it, true) }, game.pos.legalMoves().toList()) },
+			tryAnswer = { text ->
+				val legal = game.pos.legalMoves().toList()
+				val i = Neural.pick(text, Neural.names(game.pos, legal))
+				if (i == null) "Не понял ответ: в нём нет номера хода из списка. Скопируй промпт ещё раз и попроси ответить JSON."
+				else { applyMove(legal[i]); null }
+			},
+			fallback = {
+				val pos = game.pos.copy(); val plies = game.moves.size; val my = token.get()
+				BotRunner.exec.execute {
+					val m = MaterialBot(3).pick(pos, plies) { token.get() != my }
+					BotRunner.main.post { if (token.get() == my && m != 0) applyMove(m) }
+				}
+			}))
 	}
 
 	// Полоса преимущества: Stockfish глубины 3 в отдельном процессе; если он недоступен — оценка из chess-bots.js
@@ -351,6 +380,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 			linkLost -> "Соединение потеряно"
 			thinking -> "${playerOf(game.pos.side).shortName} думает…"
 			playerOf(game.pos.side).kind == Player.Kind.REMOTE -> "Ход соперника" + if (board.premoveFrom >= 0) " · предход назначен" else ""
+			playerOf(game.pos.side).kind == Player.Kind.NEURAL -> "Ждём ход нейросети"
 			game.pos.inCheck() -> "Шах! Ход ${if (game.pos.side == P.WHITE) "белых" else "чёрных"}"
 			else -> "Ход ${if (game.pos.side == P.WHITE) "белых" else "чёрных"}"
 		}) + (if (r == null) extra else "")
@@ -532,6 +562,7 @@ class GameScreen(a: MainActivity, private val cfg: GameConfig, saved: JSONObject
 		if (result != null || paused || thinking) return
 		val pl = playerOf(game.pos.side)
 		if (pl.isHuman || pl.kind == Player.Kind.REMOTE) return
+		if (pl.kind == Player.Kind.NEURAL) { updateNeural(); return }
 		thinking = true
 		updateStatus()
 		val my = token.incrementAndGet()

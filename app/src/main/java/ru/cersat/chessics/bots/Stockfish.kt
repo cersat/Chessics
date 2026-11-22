@@ -283,7 +283,7 @@ object Stockfish {
 
 // Описание игрока: человек или бот
 data class Player(val kind: Kind, val level: Int = 0) {
-	enum class Kind { HUMAN, RANDOM, ALGO, MATERIAL, STOCKFISH, REMOTE }
+	enum class Kind { HUMAN, RANDOM, ALGO, MATERIAL, STOCKFISH, REMOTE, NEURAL }
 
 	val isHuman get() = kind == Kind.HUMAN
 
@@ -294,6 +294,7 @@ data class Player(val kind: Kind, val level: Int = 0) {
 		Kind.MATERIAL -> "Материал · глубина $level"
 		Kind.STOCKFISH -> if (level <= 0) "Stockfish · полная сила" else if (level < Stockfish.SF_MIN_ELO) "Stockfish $level (Fairy)" else "Stockfish $level"
 		Kind.REMOTE -> "Соперник по сети"
+		Kind.NEURAL -> "Нейросеть (через промпт)"
 	}
 
 	val shortName: String get() = when (kind) {
@@ -303,6 +304,7 @@ data class Player(val kind: Kind, val level: Int = 0) {
 		Kind.MATERIAL -> "Материал $level"
 		Kind.STOCKFISH -> if (level <= 0) "Stockfish MAX" else "Stockfish $level"
 		Kind.REMOTE -> "Соперник"
+		Kind.NEURAL -> "Нейросеть"
 	}
 
 	// Примерный рейтинг. Для Stockfish — его UCI_Elo; для наших ботов — оценка «на глаз».
@@ -313,6 +315,7 @@ data class Player(val kind: Kind, val level: Int = 0) {
 		Kind.MATERIAL -> intArrayOf(500, 700, 900, 1050, 1200, 1300, 1400, 1450)[(level - 1).coerceIn(0, 7)]
 		Kind.STOCKFISH -> if (level <= 0) 3500 else level
 		Kind.REMOTE -> 0
+		Kind.NEURAL -> 0
 	}
 
 	fun encode() = "${kind.name}:$level"

@@ -187,8 +187,9 @@ open class MainActivity : Activity() {
 		navTab = i
 		stack.add(when (i) {
 			1 -> PuzzlesScreen(this)
-			2 -> ShopScreen(this)
-			3 -> ProfileScreen(this)
+			2 -> VariantListScreen(this)
+			3 -> ShopScreen(this)
+			4 -> ProfileScreen(this)
 			else -> HomeScreen(this)
 		})
 		render()
@@ -201,7 +202,7 @@ open class MainActivity : Activity() {
 
 	private fun buildNav(active: Int) {
 		nav.removeAllViews()
-		val items = listOf("♟" to "Играть", "🧩" to "Задачи", "💎" to "Магазин", "👤" to "Профиль")
+		val items = listOf("♟" to "Играть", "🧩" to "Задачи", "🛠" to "Варианты", "💎" to "Магазин", "👤" to "Профиль")
 		items.forEachIndexed { i, (ic, label) ->
 			val sel = i == active
 			val c = if (sel) ui.t.accent else ui.t.sub

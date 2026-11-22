@@ -36,6 +36,7 @@ data class GameConfig(
 	val remote get() = white.kind == Player.Kind.REMOTE || black.kind == Player.Kind.REMOTE
 	val bot: Player? get() = when {
 		remote -> null
+		white.kind == Player.Kind.NEURAL || black.kind == Player.Kind.NEURAL -> null // силу нейросети не измерить — без наград и рейтинга
 		white.isHuman && !black.isHuman -> black
 		black.isHuman && !white.isHuman -> white
 		else -> null
@@ -110,9 +111,6 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		})
 		box.addView(modeCard("🎨", "Шахматы на четверых", "Две команды на доске 14×14: люди и боты в любом составе") {
 			a.push(FourSetupScreen(a))
-		})
-		box.addView(modeCard("🧩", "Конструктор вариантов", "Своя доска, свои фигуры и правила — и партия против ботов или вдвоём") {
-			a.push(VariantListScreen(a))
 		})
 		box.addView(modeCard("📡", "По Wi-Fi или Bluetooth", "Партия между двумя телефонами рядом, без интернета") {
 			a.push(LanScreen(a))
@@ -240,6 +238,8 @@ class SetupScreen(a: MainActivity, private val mode: Mode, private val widgetId:
 	private var white = Player.decode(st.str("setupW", "HUMAN:0"))
 	private var black = Player.decode(st.str("setupB", "MATERIAL:3"))
 	private var variant = st.str("setupVariant", "0").toInt()
+	private val customs = if (widgetId >= 0) emptyList() else VariantStore.list(st)
+	private var custom = st.str("setupCustom", "-1").toInt().takeIf { it in customs.indices } ?: -1
 
 	override fun build(): View {
 		val box = ui.col(16, 14)
@@ -249,8 +249,18 @@ class SetupScreen(a: MainActivity, private val mode: Mode, private val widgetId:
 			Mode.CUSTOM -> "Своя партия"
 		})))
 		val vc = ui.col(0, 8)
-		vc.addView(ui.chips(V.NAMES.mapIndexed { i, n -> n to (i == variant) }, 4) { variant = it; a.refresh() })
-		vc.addView(ui.sub(when (variant) {
+		vc.addView(ui.chips(V.NAMES.mapIndexed { i, n -> n to (custom < 0 && i == variant) }, 4) { variant = it; custom = -1; a.refresh() })
+		if (customs.isNotEmpty()) {
+			vc.addView(ui.sub("Свои варианты из конструктора:"))
+			vc.addView(ui.chips(customs.mapIndexed { i, cv -> cv.name to (i == custom) }, 2) { custom = it; a.refresh() })
+		}
+		if (custom >= 0) {
+			val cv = customs[custom]
+			val fairy = ru.cersat.chessics.chess.FairyVariant.plan(cv)
+			vc.addView(ui.sub("${cv.w}×${cv.h} · ${ru.cersat.chessics.chess.Variant.WIN_NAMES[cv.win]}. Stockfish здесь — Fairy-Stockfish" +
+				(if (fairy.plan == null) ", но этот вариант он не понимает (${fairy.reason}) — вместо него сыграет Материал 3." else ".") +
+				" Часов в своих вариантах пока нет — контроль времени не действует."))
+		} else vc.addView(ui.sub(when (variant) {
 			V.CHESS960 -> "Фигуры на первой линии расставлены случайно (одна из 960 позиций), рокировка — как в Chess960: нажми королём на свою ладью."
 			V.THREE_CHECK -> "Побеждает тот, кто первым объявит три шаха (или поставит мат). Stockfish здесь — это Fairy-Stockfish (до 2850 Эло)."
 			V.KOTH -> "Побеждает тот, чей король первым дойдёт до центра (d4, e4, d5, e5), или мат. Stockfish здесь — это Fairy-Stockfish (до 2850 Эло)."
@@ -297,12 +307,14 @@ class SetupScreen(a: MainActivity, private val mode: Mode, private val widgetId:
 		fams.add("Материал" to Player.Kind.MATERIAL)
 		fams.add("Алгоритм" to Player.Kind.ALGO)
 		fams.add("Случайный" to Player.Kind.RANDOM)
+		fams.add("Нейросеть" to Player.Kind.NEURAL)
 		box.addView(ui.chips(fams.map { it.first to (it.second == cur.kind) }, 3) { i ->
 			onChange(when (fams[i].second) {
 				Player.Kind.HUMAN -> Player.HUMAN
 				Player.Kind.STOCKFISH -> Player(Player.Kind.STOCKFISH, 1350)
 				Player.Kind.MATERIAL -> Player(Player.Kind.MATERIAL, 3)
 				Player.Kind.ALGO -> Player(Player.Kind.ALGO, 3)
+				Player.Kind.NEURAL -> Player(Player.Kind.NEURAL, 0)
 				else -> Player(Player.Kind.RANDOM, 0)
 			})
 		})
@@ -321,13 +333,41 @@ class SetupScreen(a: MainActivity, private val mode: Mode, private val widgetId:
 				box.addView(ui.sub("Не перебор, а правила: видит мат в 1, не вешает фигуры (SEE), ищет вилки; с «Сильного» смотрит ответ соперника и не пропускает мат в 1; в эндшпиле двигает проходные. ≈${cur.elo} Эло (оценка на глаз)."))
 			}
 			Player.Kind.RANDOM -> box.addView(ui.sub("Ходит случайно. Для разминки и проверки матов."))
+			Player.Kind.NEURAL -> box.addView(ui.sub("Любой чат-бот — ChatGPT, Claude, Gemini… В его ход приложение даёт промпт с доской и списком легальных ходов: копируешь, отправляешь нейросети, вставляешь ответ. Наград и рейтинга за такие партии нет."))
 			Player.Kind.HUMAN -> box.addView(ui.sub("Ходит человек с этого телефона."))
 			Player.Kind.REMOTE -> {}
 		}
 		return box
 	}
 
+	// игрок из обычных режимов → сиденье варианта из конструктора
+	private fun seatOf(p: Player, cv: ru.cersat.chessics.chess.Variant): String = when (p.kind) {
+		Player.Kind.HUMAN -> "H"
+		Player.Kind.NEURAL -> "N"
+		Player.Kind.RANDOM -> "R"
+		Player.Kind.MATERIAL -> "M${p.level.coerceIn(1, 4)}"
+		Player.Kind.ALGO -> "A${p.level.coerceIn(1, 5)}"
+		Player.Kind.STOCKFISH -> if (ru.cersat.chessics.chess.FairyVariant.plan(cv).plan == null) "M3" else "F${if (p.level <= 0) 0 else p.level.coerceIn(500, 2850)}"
+		Player.Kind.REMOTE -> "H"
+	}
+
 	private fun start() {
+		st.setStr("setupCustom", "$custom")
+		if (custom >= 0 && widgetId < 0) {
+			val cv = customs[custom]
+			when (mode) {
+				Mode.BOT -> { st.setStr("setupBot", bot.encode()); st.setStr("setupColor", "$color") }
+				Mode.CUSTOM -> { st.setStr("setupW", white.encode()); st.setStr("setupB", black.encode()) }
+				else -> {}
+			}
+			val (w, b) = when (mode) {
+				Mode.BOT -> { val hw = when (color) { 0 -> true; 1 -> false; else -> Math.random() < 0.5 }; if (hw) "H" to seatOf(bot, cv) else seatOf(bot, cv) to "H" }
+				Mode.HVH -> "H" to "H"
+				Mode.CUSTOM -> seatOf(white, cv) to seatOf(black, cv)
+			}
+			a.replace(VariantGameScreen(a, cv, w, b))
+			return
+		}
 		st.setStr("setupClock_$mode", "$clock")
 		st.setStr("setupVariant", "$variant")
 		when (mode) {

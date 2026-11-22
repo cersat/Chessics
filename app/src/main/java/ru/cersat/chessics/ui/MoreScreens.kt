@@ -15,7 +15,7 @@ import ru.cersat.chessics.data.Reminder
 import ru.cersat.chessics.data.Shop
 
 class ShopScreen(a: MainActivity) : Screen(a) {
-	override val tab = 2
+	override val tab = 3
 	private val st = a.store
 
 	override fun build(): View {
@@ -157,7 +157,7 @@ class ShopScreen(a: MainActivity) : Screen(a) {
 }
 
 class ProfileScreen(a: MainActivity) : Screen(a) {
-	override val tab = 3
+	override val tab = 4
 	private val st = a.store
 
 	override fun build(): View {

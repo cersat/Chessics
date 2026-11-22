@@ -74,6 +74,7 @@ class Variant(
 	var enPassant = true
 	var pawnDouble = true
 	var promo = mutableListOf<String>() // в кого превращаются пешки (имена фигур); пусто — не превращаются
+	var shuffle = false // перемешивать первую линию перед каждой партией, как в Chess960
 
 	fun idx(x: Int, y: Int) = y * w + x
 	fun piece(code: Int) = pieces[(code and 0xFF) - 1]
@@ -84,7 +85,7 @@ class Variant(
 		.put("cells", JSONArray().apply { cells.forEach { put(it) } })
 		.put("locked", JSONArray().apply { locked.forEach { put(it) } })
 		.put("win", win).put("nChecks", nChecks).put("stalemate", stalemate).put("castling", castling)
-		.put("enPassant", enPassant).put("pawnDouble", pawnDouble).put("promo", JSONArray(promo))
+		.put("enPassant", enPassant).put("pawnDouble", pawnDouble).put("promo", JSONArray(promo)).put("shuffle", shuffle)
 
 	fun copy(): Variant = from(json())
 
@@ -93,6 +94,42 @@ class Variant(
 		val c = IntArray(nw * nh); val l = BooleanArray(nw * nh)
 		for (y in 0 until minOf(h, nh)) for (x in 0 until minOf(w, nw)) { c[y * nw + x] = cells[idx(x, y)]; l[y * nw + x] = locked[idx(x, y)] }
 		w = nw; h = nh; cells = c; locked = l
+	}
+
+	// расстановка для очередной партии: при перемешивании — случайная первая линия.
+	// Одинаковые «одноцветные» фигуры (как слоны) встают на клетки разного цвета, король — между двумя рокирующимися фигурами.
+	fun dealt(rnd: java.util.Random = java.util.Random()): Variant {
+		if (!shuffle) return this
+		val d = copy()
+		d.shuffle = false
+		val white = (0 until w).map { idx(it, 0) }.filter { cells[it] != 0 && (cells[it] shr 8) == 0 }
+		val black = (0 until w).map { idx(it, h - 1) }.filter { cells[it] != 0 && (cells[it] shr 8) == 1 }
+		val mirrored = white.map { it % w } == black.map { it % w } && white.all { s -> (cells[idx(s % w, h - 1)] and 0xFF) == (cells[s] and 0xFF) }
+		val wx = deal(white.map { it % w }, white.map { cells[it] and 0xFF }, 0, rnd)
+		for ((x, t) in wx) d.cells[idx(x, 0)] = t
+		if (mirrored) for ((x, t) in wx) d.cells[idx(x, h - 1)] = t or (1 shl 8)
+		else for ((x, t) in deal(black.map { it % w }, black.map { cells[it] and 0xFF }, h - 1, rnd)) d.cells[idx(x, h - 1)] = t or (1 shl 8)
+		return d
+	}
+
+	private fun deal(xs: List<Int>, types: List<Int>, y: Int, rnd: java.util.Random): List<Pair<Int, Int>> {
+		if (xs.size < 2) return xs.zip(types)
+		fun bound(t: Int) = pieces[t - 1].moves.isNotEmpty() && pieces[t - 1].moves.all { (it.dx + it.dy) % 2 == 0 }
+		val pairs = types.groupBy { it }.filter { (t, l) -> l.size == 2 && bound(t) }.keys
+		val royal = types.filter { pieces[it - 1].royal }
+		val castlers = types.filter { pieces[it - 1].castler }
+		var best = types
+		for (attempt in 0 until 2000) {
+			val p = types.shuffled(rnd)
+			val okColors = pairs.all { t -> val at = xs.indices.filter { p[it] == t }; (xs[at[0]] + y) % 2 != (xs[at[1]] + y) % 2 }
+			val okKing = royal.size != 1 || castlers.size != 2 || run {
+				val k = xs[p.indexOf(royal[0])]; val cs = xs.indices.filter { pieces[p[it] - 1].castler }.map { xs[it] }
+				k > cs.min() && k < cs.max()
+			}
+			best = p
+			if (okColors && okKing) break
+		}
+		return xs.zip(best)
 	}
 
 	// удалить фигуру: её клетки освобождаются, номера остальных сдвигаются
@@ -129,6 +166,7 @@ class Variant(
 			v.castling = o.optBoolean("castling", true)
 			v.enPassant = o.optBoolean("enPassant", true)
 			v.pawnDouble = o.optBoolean("pawnDouble", true)
+			v.shuffle = o.optBoolean("shuffle", false)
 			o.optJSONArray("promo")?.let { a -> for (i in 0 until a.length()) v.promo.add(a.getString(i)) }
 			// чистим ссылки на несуществующие фигуры
 			for (i in v.cells.indices) if (v.cells[i] != 0 && !v.has(v.cells[i])) v.cells[i] = 0
@@ -149,6 +187,10 @@ class Variant(
 			v.promo.addAll(listOf("Ферзь", "Ладья", "Слон", "Конь"))
 			return v
 		}
+
+		fun chess960() = classic().also { it.name = "Chess960"; it.shuffle = true }
+		fun threeCheck() = classic().also { it.name = "Три шаха"; it.win = WIN_CHECKS; it.nChecks = 3 }
+		fun koth() = classic().also { it.name = "Царь горы"; it.win = WIN_HILL }
 
 		// маленькая доска 6×6 без слонов (как шахматы Лос-Аламоса)
 		fun mini(): Variant {
@@ -528,7 +570,7 @@ class VAlgorithm(private val level: Int) : VBot {
 
 object VBots {
 	// "H" человек, "R" случайный, "M3" материал 3, "A2" алгоритм 2
-	val OPTIONS = listOf("H", "R", "M1", "M2", "M3", "M4", "A1", "A2", "A3", "A4", "A5")
+	val OPTIONS = listOf("H", "N", "R", "M1", "M2", "M3", "M4", "A1", "A2", "A3", "A4", "A5")
 	// Fairy-Stockfish: Эло, 0 — полная сила
 	val FAIRY = listOf("F800", "F1200", "F1600", "F2000", "F2400", "F0")
 
@@ -537,6 +579,8 @@ object VBots {
 		s == "R" -> "Случайный"
 		s.startsWith("M") -> "Материал ${s.drop(1)}"
 		s.startsWith("A") -> "Алгоритм ${s.drop(1)}"
+		s == "N" -> "Нейросеть"
+		s == "L" -> "Соперник по сети"
 		s == "F0" -> "Fairy · полная сила"
 		s.startsWith("F") -> "Fairy ${s.drop(1)}"
 		else -> s
