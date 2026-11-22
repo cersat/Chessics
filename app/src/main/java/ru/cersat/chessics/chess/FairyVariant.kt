@@ -61,8 +61,14 @@ object FairyVariant {
 		val royals = if (allPieces) emptyList() else v.pieces.indices.filter { v.pieces[it].royal }
 		if (royals.size > 1) return Result(null, "несколько разных королевских фигур")
 		if (v.pieces.size - royals.size > LETTERS.length) return Result(null, "больше ${LETTERS.length} видов фигур")
+		// сколько королевских фигур у каждой стороны в начале
+		val royalCount = IntArray(2) { c -> v.cells.count { it != 0 && (it shr 8) == c && (it and 0xFF) - 1 in royals } }
+		// Несколько королей на сторону: настоящий король Fairy один, поэтому короли — «псевдокоролевские» фигуры:
+		// под бой их ставить нельзя, атака любого — шах, взятие любого — проигрыш (как у нас)
+		val pseudo = royals.isNotEmpty() && v.win != Variant.WIN_CAPTURE_ROYAL && (royalCount[0] > 1 || royalCount[1] > 1)
+		if (pseudo && royalCount[0] != royalCount[1]) return Result(null, "у сторон разное число королевских фигур (${royalCount[0]} и ${royalCount[1]})")
 		// при взятии короля он у Fairy — обычная фигура: настоящий король Fairy не даёт ходить под бой
-		val asKing = if (v.win == Variant.WIN_CAPTURE_ROYAL) emptyList() else royals
+		val asKing = if (v.win == Variant.WIN_CAPTURE_ROYAL || pseudo) emptyList() else royals
 		val letters = CharArray(v.pieces.size)
 		var li = 0
 		for (i in v.pieces.indices) letters[i] = if (i in asKing) 'k' else LETTERS[li++]
@@ -95,10 +101,11 @@ object FairyVariant {
 			lines.add("promotionPawnTypes = $pawns")
 			lines.add("nMoveRuleTypes = $pawns")
 			val promo = v.promo.mapNotNull { n -> v.pieces.indexOfFirst { it.name == n }.takeIf { it >= 0 && it !in asKing } }.map { letters[it] }.joinToString("")
-			lines.add("promotionPieceTypes = ${promo.ifEmpty { "-" }}")
+			val promo2 = if (v.win == Variant.WIN_PROMO) "" else promo
+			lines.add("promotionPieceTypes = ${promo2.ifEmpty { "-" }}")
 			lines.add("promotionRegionWhite = *${v.h}")
 			lines.add("promotionRegionBlack = *1")
-			lines.add("mandatoryPawnPromotion = ${promo.isNotEmpty()}")
+			lines.add("mandatoryPawnPromotion = ${promo2.isNotEmpty()}")
 			// двойной ход задан в Бетце как «начальный» ход; Fairy разрешает его на клетках региона — это стартовые клетки пешек
 			lines.add("doubleStep = ${v.pawnDouble}")
 			for (c in 0..1) {
@@ -143,14 +150,24 @@ object FairyVariant {
 		}
 		if (castle == null) lines.add("castling = false")
 		// как побеждают
+		if (pseudo) {
+			lines.add("extinctionValue = loss")
+			lines.add("extinctionPieceTypes = ${letters[royals[0]]}")
+			lines.add("extinctionPieceCount = ${royalCount[0] - 1}")
+			lines.add("extinctionPseudoRoyal = true")
+		}
 		when {
+			pseudo && v.win == Variant.WIN_HILL -> return Result(null, "холм при нескольких королях Fairy не поддерживает")
 			royals.isEmpty() -> { lines.add("checking = false"); lines.add("extinctionValue = loss"); lines.add("extinctionPieceTypes = *") }
 			v.win == Variant.WIN_CAPTURE_ROYAL -> { lines.add("checking = false"); lines.add("extinctionValue = loss"); lines.add("extinctionPieceTypes = ${letters[royals[0]]}") }
 			v.win == Variant.WIN_HILL -> {
-				val xs = if (v.w % 2 == 0) listOf(v.w / 2 - 1, v.w / 2) else listOf(v.w / 2)
-				val ys = if (v.h % 2 == 0) listOf(v.h / 2 - 1, v.h / 2) else listOf(v.h / 2)
-				val hill = xs.flatMap { x -> ys.map { y -> "${file(x)}${y + 1}" } }.joinToString(" ")
+				val hill = v.hillCells().joinToString(" ") { sqName(v, it) }
 				lines.add("flagPiece = k"); lines.add("flagRegionWhite = $hill"); lines.add("flagRegionBlack = $hill")
+			}
+			v.win == Variant.WIN_PROMO -> {
+				val pawnTypes = v.pieces.indices.filter { v.pieces[it].pawn && it !in asKing }
+				if (pawnTypes.size != 1) return Result(null, if (pawnTypes.isEmpty()) "нет пешек, а победа — превращением" else "несколько видов пешек при победе превращением")
+				lines.add("flagPiece = ${letters[pawnTypes[0]]}"); lines.add("flagRegionWhite = *${v.h}"); lines.add("flagRegionBlack = *1")
 			}
 			v.win == Variant.WIN_CHECKS -> lines.add("checkCounting = true")
 		}

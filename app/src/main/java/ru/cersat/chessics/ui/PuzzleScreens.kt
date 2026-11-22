@@ -136,8 +136,65 @@ class PuzzlesScreen(a: MainActivity) : Screen(a) {
 
 // Решение задачи. Ход не из заготовленного решения тоже засчитывается, если Stockfish подтверждает,
 // что он ведёт к цели не хуже (мат за оставшееся число ходов / сохраняет выигрыш).
+// Следующая сгенерированная задача на ту же тему ищется в фоне, пока решается текущая
+object NextPuzzle {
+	private var theme: String? = null
+	private var ready: Puzzles.Puzzle? = null
+	private var cancel: Puzzles.GenCancel? = null
+	var running = false
+		private set
+	private var waiter: ((Puzzles.Puzzle?) -> Unit)? = null
+
+	fun themeOf(pz: Puzzles.Puzzle) = pz.themes.firstOrNull { it in Puzzles.GEN_THEMES }
+
+	fun prepare(ctx: android.content.Context, th: String?) {
+		if (theme == th && (running || ready != null)) return
+		cancel?.cancelled = true
+		theme = th; ready = null; running = true
+		val c = Puzzles.GenCancel(); cancel = c
+		val app = ctx.applicationContext
+		Stockfish.analysis.exec.execute {
+			val pz = Puzzles.generate(app, th, c) {}
+			BotRunner.main.post {
+				if (cancel !== c) return@post
+				running = false
+				val w = waiter; waiter = null
+				if (w != null) w(pz) else ready = pz
+			}
+		}
+	}
+
+	// готовая задача, если есть; иначе — подождать текущий поиск (или начать его)
+	fun next(ctx: android.content.Context, th: String?, got: (Puzzles.Puzzle?) -> Unit) {
+		if (theme == th && ready != null) { val p = ready; ready = null; got(p); return }
+		if (!(theme == th && running)) prepare(ctx, th)
+		waiter = got
+	}
+
+	fun stopWaiting() { waiter = null }
+}
+
 class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val daily: Boolean) : Screen(a) {
 	private val st = a.store
+	init { if (pz.generated) NextPuzzle.prepare(a, NextPuzzle.themeOf(pz)) }
+
+	// следующая сгенерированная на ту же тему
+	private fun nextGenerated() {
+		val th = NextPuzzle.themeOf(pz)
+		var dlg: android.app.AlertDialog? = null
+		var shown = false
+		NextPuzzle.next(a, th) { next ->
+			dlg?.dismiss()
+			if (next == null) { if (shown || dlg == null) a.toast("За 2 минуты не нашлось подходящей позиции — попробуй ещё раз"); return@next }
+			Puzzles.addGenerated(a, next)
+			a.replace(PuzzleScreen(a, next, false))
+		}
+		if (NextPuzzle.running) {
+			shown = true
+			dlg = a.dialog("Ищу задачу" + (th?.let { " · ${Puzzles.themeTitle(it).substringBefore(" · ")}" } ?: ""),
+				ui.sub("Генератор уже ищет её в фоне, осталось немного.", 14f), "Отмена" to { NextPuzzle.stopWaiting() }, cancelable = false)
+		}
+	}
 	private val pos = Position().also { it.setFen(pz.fen) }
 	private val hero = pos.side
 	private val startMat = Tactics.material(pos, hero) - Tactics.material(pos, hero xor 1)
@@ -179,6 +236,10 @@ class PuzzleScreen(a: MainActivity, private val pz: Puzzles.Puzzle, private val 
 		if (!solved) {
 			controls.addView(ui.button("💡 Подсказка (${st.hintsLeft})", false, !busy) { showHint() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 			controls.addView(ui.button("Заново", false, !busy) { restart() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+			if (pz.generated) controls.addView(ui.button("Следующая", false, !busy) { nextGenerated() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		} else if (pz.generated) {
+			controls.addView(ui.button("Следующая") { nextGenerated() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+			controls.addView(ui.button("К задачам", false) { a.pop() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		} else {
 			val nextRepeat = st.repeatIds().filter { it != pz.id }.mapNotNull { Puzzles.byId(a, it) }.firstOrNull()
 			val next = nextRepeat ?: Puzzles.all(a).firstOrNull { !st.isSolved(it.id) && it.id != pz.id && it.generated == pz.generated && it.themes.firstOrNull() == pz.themes.firstOrNull() }

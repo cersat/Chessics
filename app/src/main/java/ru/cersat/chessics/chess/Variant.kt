@@ -75,6 +75,16 @@ class Variant(
 	var pawnDouble = true
 	var promo = mutableListOf<String>() // в кого превращаются пешки (имена фигур); пусто — не превращаются
 	var shuffle = false // перемешивать первую линию перед каждой партией, как в Chess960
+	var hill: BooleanArray = BooleanArray(w * h) // клетки холма; ни одной — центр доски
+
+	// холм: выбранные клетки, а если не выбрано ни одной — центральные 2×2 (на нечётной стороне — 1 клетка)
+	fun hillCells(): List<Int> {
+		val chosen = hill.indices.filter { hill[it] && !locked[it] }
+		if (chosen.isNotEmpty()) return chosen
+		val xs = if (w % 2 == 0) listOf(w / 2 - 1, w / 2) else listOf(w / 2)
+		val ys = if (h % 2 == 0) listOf(h / 2 - 1, h / 2) else listOf(h / 2)
+		return xs.flatMap { x -> ys.map { y -> idx(x, y) } }
+	}
 
 	fun idx(x: Int, y: Int) = y * w + x
 	fun piece(code: Int) = pieces[(code and 0xFF) - 1]
@@ -86,14 +96,15 @@ class Variant(
 		.put("locked", JSONArray().apply { locked.forEach { put(it) } })
 		.put("win", win).put("nChecks", nChecks).put("stalemate", stalemate).put("castling", castling)
 		.put("enPassant", enPassant).put("pawnDouble", pawnDouble).put("promo", JSONArray(promo)).put("shuffle", shuffle)
+		.put("hill", JSONArray().apply { hill.forEach { put(it) } })
 
 	fun copy(): Variant = from(json())
 
 	// изменить размер, сохранив то, что помещается
 	fun resize(nw: Int, nh: Int) {
-		val c = IntArray(nw * nh); val l = BooleanArray(nw * nh)
-		for (y in 0 until minOf(h, nh)) for (x in 0 until minOf(w, nw)) { c[y * nw + x] = cells[idx(x, y)]; l[y * nw + x] = locked[idx(x, y)] }
-		w = nw; h = nh; cells = c; locked = l
+		val c = IntArray(nw * nh); val l = BooleanArray(nw * nh); val hl = BooleanArray(nw * nh)
+		for (y in 0 until minOf(h, nh)) for (x in 0 until minOf(w, nw)) { c[y * nw + x] = cells[idx(x, y)]; l[y * nw + x] = locked[idx(x, y)]; hl[y * nw + x] = hill[idx(x, y)] }
+		w = nw; h = nh; cells = c; locked = l; hill = hl
 	}
 
 	// расстановка для очередной партии: при перемешивании — случайная первая линия.
@@ -149,7 +160,8 @@ class Variant(
 		const val WIN_ALL = 2
 		const val WIN_HILL = 3
 		const val WIN_CHECKS = 4
-		val WIN_NAMES = listOf("Мат", "Взятие короля", "Взять все фигуры", "Король на холме", "N шахов")
+		const val WIN_PROMO = 5
+		val WIN_NAMES = listOf("Мат", "Взятие короля", "Взять все фигуры", "Король на холме", "N шахов", "Пешка дошла до конца")
 		val STALEMATE_NAMES = listOf("Пат — ничья", "Пат — проигрыш", "Пат — победа")
 		const val MIN = 4
 		const val MAX = 12
@@ -160,13 +172,14 @@ class Variant(
 			val ca = o.optJSONArray("cells"); val la = o.optJSONArray("locked")
 			val v = Variant(o.optString("name", "Вариант"), w, h, MutableList(pa.length()) { PieceDef.from(pa.getJSONObject(it)) },
 				IntArray(w * h) { ca?.optInt(it) ?: 0 }, BooleanArray(w * h) { la?.optBoolean(it) ?: false })
-			v.win = o.optInt("win", WIN_MATE).coerceIn(0, 4)
+			v.win = o.optInt("win", WIN_MATE).coerceIn(0, 5)
 			v.nChecks = o.optInt("nChecks", 3).coerceIn(1, 20)
 			v.stalemate = o.optInt("stalemate").coerceIn(0, 2)
 			v.castling = o.optBoolean("castling", true)
 			v.enPassant = o.optBoolean("enPassant", true)
 			v.pawnDouble = o.optBoolean("pawnDouble", true)
 			v.shuffle = o.optBoolean("shuffle", false)
+			o.optJSONArray("hill")?.let { a -> if (a.length() == w * h) v.hill = BooleanArray(w * h) { a.optBoolean(it) } }
 			o.optJSONArray("promo")?.let { a -> for (i in 0 until a.length()) v.promo.add(a.getString(i)) }
 			// чистим ссылки на несуществующие фигуры
 			for (i in v.cells.indices) if (v.cells[i] != 0 && !v.has(v.cells[i])) v.cells[i] = 0
@@ -230,16 +243,18 @@ class VPos(val v: Variant) {
 	var epVictim = -1
 	var checks = IntArray(2)
 	var quiet = 0
+	var promoted = -1 // цвет, чья пешка дошла до последней горизонтали (для победы превращением)
 	val history = HashMap<Long, Int>()
 	private val royalTypes = v.pieces.indices.filter { v.pieces[it].royal }.toSet()
 	private val promoTypes = v.promo.mapNotNull { name -> v.pieces.indexOfFirst { it.name == name }.takeIf { it >= 0 } }
 	val hasRoyalStart = IntArray(2).also { r -> for (c in v.cells) if (c != 0 && (c and 0xFF) - 1 in royalTypes) r[c shr 8]++ }
-	private val usesCheck get() = (v.win == Variant.WIN_MATE || v.win == Variant.WIN_HILL || v.win == Variant.WIN_CHECKS) && royalTypes.isNotEmpty()
+	private val usesCheck get() = (v.win == Variant.WIN_MATE || v.win == Variant.WIN_HILL || v.win == Variant.WIN_CHECKS || v.win == Variant.WIN_PROMO) && royalTypes.isNotEmpty()
+	private val hillSet by lazy { v.hillCells().toHashSet() }
 
 	fun copy(): VPos {
 		val p = VPos(v)
 		p.sq = sq.copyOf(); p.moved = moved.copyOf(); p.turn = turn; p.ep = ep; p.epVictim = epVictim
-		p.checks = checks.copyOf(); p.quiet = quiet
+		p.checks = checks.copyOf(); p.quiet = quiet; p.promoted = promoted
 		p.history.putAll(history)
 		return p
 	}
@@ -290,7 +305,8 @@ class VPos(val v: Variant) {
 	}
 
 	private fun add(s: Int, t: Int, d: PieceDef, c: Int, out: MutableList<Int>, flags: Int) {
-		if (d.pawn && lastRank(c, t) && promoTypes.isNotEmpty()) for (p in promoTypes) out.add(VM.make(s, t, p + 1, flags))
+		// при победе превращением дошедшая пешка сразу выигрывает — превращать её не во что
+		if (d.pawn && lastRank(c, t) && promoTypes.isNotEmpty() && v.win != Variant.WIN_PROMO) for (p in promoTypes) out.add(VM.make(s, t, p + 1, flags))
 		else out.add(VM.make(s, t, 0, flags))
 	}
 
@@ -360,6 +376,7 @@ class VPos(val v: Variant) {
 			sq[v.idx(x(f) + dir, y(f))] = rook
 			moved[v.idx(x(f) + dir, y(f))] = true
 		}
+		if (d.pawn && lastRank(color(code), t)) promoted = color(code)
 		sq[t] = if (VM.promo(m) != 0) Variant.code(VM.promo(m) - 1, color(code)) else code
 		sq[f] = 0
 		moved[t] = true; moved[f] = true
@@ -386,6 +403,7 @@ class VPos(val v: Variant) {
 			Variant.WIN_ALL -> for (c in 0..1) if ((0 until n).none { sq[it] != 0 && color(sq[it]) == c }) return 1 - c
 			Variant.WIN_HILL -> if (royals(mover).any { onHill(it) }) return mover
 			Variant.WIN_CHECKS -> if (checks[mover] >= v.nChecks) return mover
+			Variant.WIN_PROMO -> if (promoted == mover) return mover
 		}
 		// у стороны не осталось фигур вовсе — проигрыш в любом режиме
 		for (c in 0..1) if ((0 until n).none { sq[it] != 0 && color(sq[it]) == c }) return 1 - c
@@ -399,11 +417,7 @@ class VPos(val v: Variant) {
 	}
 
 	// «холм» — центральные 2×2 (или 1×1/1×2 на нечётной доске)
-	fun onHill(s: Int): Boolean {
-		val xs = if (v.w % 2 == 0) setOf(v.w / 2 - 1, v.w / 2) else setOf(v.w / 2)
-		val ys = if (v.h % 2 == 0) setOf(v.h / 2 - 1, v.h / 2) else setOf(v.h / 2)
-		return x(s) in xs && y(s) in ys
-	}
+	fun onHill(s: Int): Boolean = s in hillSet
 
 	// материал в пользу белых
 	fun material(): Int {

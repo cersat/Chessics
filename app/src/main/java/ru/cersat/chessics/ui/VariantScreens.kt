@@ -127,6 +127,12 @@ class VBoardView(ctx: Context) : View(ctx) {
 			if (i == selected) { p.color = board.select; c.drawRect(x, y, x + s, y + s, p) }
 			if (i == check) { p.color = 0x88FF2020.toInt(); c.drawCircle(x + s / 2, y + s / 2, s * 0.5f, p) }
 		}
+		// холм: золотая рамка по клеткам
+		if (v.win == Variant.WIN_HILL) {
+			p.style = Paint.Style.STROKE; p.strokeWidth = s * 0.08f; p.color = 0xFFFFC23D.toInt()
+			for (i in v.hillCells()) { val x = col(i) * s; val y = row(i) * s; c.drawRect(x + s * 0.06f, y + s * 0.06f, x + s * 0.94f, y + s * 0.94f, p) }
+			p.style = Paint.Style.FILL
+		}
 		for (i in sq.indices) {
 			val code = sq[i]
 			if (code == 0 || !v.has(code)) continue
@@ -345,7 +351,10 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		bc.addView(ui.stepper("Ширина", v.w, { d -> val nw = (v.w + d).coerceIn(Variant.MIN, Variant.MAX); if (nw != v.w) { v.resize(nw, v.h); save(); a.refresh() } }, 1))
 		bc.addView(ui.stepper("Высота", v.h, { d -> val nh = (v.h + d).coerceIn(Variant.MIN, Variant.MAX); if (nh != v.h) { v.resize(v.w, nh); save(); a.refresh() } }, 1))
 		bc.addView(ui.space(6))
-		bc.addView(ui.chips(listOf("Фигура" to (tool == 0), "Стереть" to (tool == 1), "Блок клетки" to (tool == 2)), 3) { tool = it; a.refresh() })
+		if (tool == 3 && v.win != Variant.WIN_HILL) tool = 0
+		val tools = listOf("Фигура", "Стереть", "Блок клетки") + if (v.win == Variant.WIN_HILL) listOf("Холм") else emptyList()
+		bc.addView(ui.chips(tools.mapIndexed { i, n -> n to (tool == i) }, if (tools.size == 4) 2 else 3) { tool = it; a.refresh() })
+		if (tool == 3) bc.addView(ui.sub("Нажимай на клетки, чтобы добавить их к холму или убрать. Пока не выбрано ни одной, холм — центр доски."))
 		if (tool == 0) {
 			bc.addView(ui.space(6))
 			bc.addView(ui.chips(listOf("Белые" to (color == 0), "Чёрные" to (color == 1)), 2) { color = it; a.refresh() })
@@ -359,8 +368,9 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		bv.onCell = { i ->
 			when (tool) {
 				0 -> if (v.pieces.isNotEmpty() && !v.locked[i]) { val c = Variant.code(piece, color); v.cells[i] = if (v.cells[i] == c) 0 else c }
-				1 -> { v.cells[i] = 0; v.locked[i] = false }
-				else -> { v.locked[i] = !v.locked[i]; if (v.locked[i]) v.cells[i] = 0 }
+				1 -> { v.cells[i] = 0; v.locked[i] = false; v.hill[i] = false }
+				2 -> { v.locked[i] = !v.locked[i]; if (v.locked[i]) { v.cells[i] = 0; v.hill[i] = false } }
+				else -> if (!v.locked[i]) v.hill[i] = !v.hill[i]
 			}
 			save(); bv.invalidate()
 		}
@@ -375,7 +385,9 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		rc.addView(ui.sub("Как побеждают"))
 		rc.addView(ui.chips(Variant.WIN_NAMES.mapIndexed { i, n -> n to (i == v.win) }, 2) { v.win = it; save(); a.refresh() })
 		if (v.win == Variant.WIN_CHECKS) rc.addView(ui.stepper("Сколько шахов", v.nChecks, { d -> v.nChecks = (v.nChecks + d).coerceIn(1, 20); save(); a.refresh() }, 1))
-		if (v.win == Variant.WIN_HILL) rc.addView(ui.sub("Холм — центральные клетки доски (2×2 на чётной стороне, 1 клетка на нечётной)."))
+		if (v.win == Variant.WIN_HILL) rc.addView(ui.sub("Холм отмечен на доске золотой рамкой. Свои клетки холма — инструмент «Холм» над доской; если не выбрано ни одной, холм — центр."))
+		if (v.win == Variant.WIN_PROMO) rc.addView(ui.sub("Побеждает тот, чья пешка первой дойдёт до последней горизонтали. Мат тоже выигрывает, если есть король."))
+		if (v.win == Variant.WIN_PROMO && v.pieces.none { it.pawn }) rc.addView(ui.text("⚠ Нет ни одной пешки — так победить не получится.", 13f, 0xFFFFB13B.toInt()))
 		if ((v.win == Variant.WIN_MATE || v.win == Variant.WIN_CAPTURE_ROYAL || v.win == Variant.WIN_HILL || v.win == Variant.WIN_CHECKS) && v.pieces.none { it.royal })
 			rc.addView(ui.text("⚠ Нет ни одной королевской фигуры — побеждает тот, кто заберёт все фигуры соперника.", 13f, 0xFFFFB13B.toInt()))
 		rc.addView(ui.space(6))
@@ -388,15 +400,17 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		})
 		if (v.shuffle) rc.addView(ui.sub("Перед каждой партией фигуры первой линии встают случайно, у чёрных — зеркально. Одинаковые фигуры, ходящие только по своему цвету (как слоны), — на клетки разного цвета, король — между двумя рокирующимися фигурами. Рокировка — по правилам конструктора: король идёт на две клетки к ладье."))
 		rc.addView(ui.space(6))
-		rc.addView(ui.sub("Пешки превращаются на последней горизонтали в:"))
-		val promoable = v.pieces.filter { !it.royal && !it.pawn }
-		if (promoable.isEmpty()) rc.addView(ui.sub("— нет подходящих фигур"))
-		else rc.addView(ui.chips(promoable.map { "${it.symbol} ${it.name}" to (it.name in v.promo) }, 3) { i ->
-			val n = promoable[i].name
-			if (n in v.promo) v.promo.remove(n) else v.promo.add(n)
-			save(); a.refresh()
-		})
-		if (v.promo.isEmpty()) rc.addView(ui.sub("Ничего не выбрано — пешка на последней горизонтали остаётся пешкой."))
+		if (v.win != Variant.WIN_PROMO) {
+			rc.addView(ui.sub("Пешки превращаются на последней горизонтали в:"))
+			val promoable = v.pieces.filter { !it.royal && !it.pawn }
+			if (promoable.isEmpty()) rc.addView(ui.sub("— нет подходящих фигур"))
+			else rc.addView(ui.chips(promoable.map { "${it.symbol} ${it.name}" to (it.name in v.promo) }, 3) { i ->
+				val n = promoable[i].name
+				if (n in v.promo) v.promo.remove(n) else v.promo.add(n)
+				save(); a.refresh()
+			})
+			if (v.promo.isEmpty()) rc.addView(ui.sub("Ничего не выбрано — пешка на последней горизонтали остаётся пешкой."))
+		}
 		box.addView(rc)
 
 		// фигуры
@@ -579,6 +593,7 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 		}
 	}
 	private val log = ArrayList<String>()
+	private val played = ArrayList<Int>() // ходы партии — для истории
 	private val logEn = ArrayList<String>() // те же ходы латиницей — для промпта нейросети
 	private var lastMove = 0
 	private var result = -1
@@ -669,6 +684,7 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 		val cap = pos.sq[VM.to(m)] != 0 || VM.flags(m) and VM.EP != 0
 		log.add(pos.moveName(m))
 		logEn.add(Neural.name(pos, m))
+		played.add(m)
 		pos.make(m); pos.record()
 		lastMove = m
 		val check = pos.inCheck(pos.turn)
@@ -690,6 +706,7 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 			Variant.WIN_ALL -> "все фигуры взяты"
 			Variant.WIN_HILL -> if (pos.royals(r).any { pos.onHill(it) }) "король на холме" else "мат"
 			Variant.WIN_CHECKS -> if (pos.checks[r] >= v.nChecks) "${v.nChecks} шахов" else "мат"
+			Variant.WIN_PROMO -> if (pos.promoted == r) "пешка дошла до конца" else "мат"
 			else -> if (pos.legal().isEmpty() && !pos.inCheck(pos.turn)) "пат" else "мат"
 		}
 	}
@@ -713,8 +730,22 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 		}
 	}
 
+	private fun saveHistory(r: Int, why: String) {
+		if (played.isEmpty()) return
+		fun name(c: Int) = if (seats[c] == "L") remoteName.ifEmpty { "Соперник" } else VBots.title(seats[c])
+		val o = JSONObject()
+			.put("date", java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault()).format(java.util.Date()))
+			.put("w", name(0)).put("b", name(1))
+			.put("res", when (r) { 0 -> "1-0"; 1 -> "0-1"; else -> "1/2-1/2" }).put("reason", why)
+			.put("uci", "").put("tc", "").put("variant", 0)
+			.put("custom", v.json())
+			.put("vmoves", JSONArray().apply { played.forEach { m -> put(JSONArray().put(VM.from(m)).put(VM.to(m)).put(VM.promo(m))) } })
+		a.store.saveGame(o)
+	}
+
 	private fun finish(r: Int, why: String) {
 		if (result >= 0) return
+		saveHistory(r, why)
 		result = r; reason = why
 		token++; thinking = false
 		Sounds.play(a, Sounds.Kind.END)
@@ -751,4 +782,116 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 		if (fairyPlan != null) Stockfish.fairyCustom.stop()
 		if (link != null) { if (result < 0) link.send(JSONObject().put("t", "resign")); link.close() }
 	}
+}
+
+// Просмотр и разбор партии в своём варианте. Анализ — Fairy-Stockfish, если он понимает вариант.
+class VariantReviewScreen(a: MainActivity, private val v: Variant, private val moves: List<IntArray>, private val title: String, private val resultText: String) : Screen(a) {
+	private val positions = ArrayList<VPos>()
+	private val played = ArrayList<Int>()
+	private val names = ArrayList<String>()
+	private var ply = 0
+	private val plan = FairyVariant.plan(v)
+	private val evals = HashMap<Int, Int>() // оценка позиции после ply полуходов, за белых
+	private val best = HashMap<Int, String>() // лучший ход Fairy в позиции
+	private var running = false
+	private var token = 0
+	private val board = VBoardView(a)
+	private val bar = EvalBar(a)
+
+	init {
+		var p = VPos(v)
+		positions.add(p)
+		for (mv in moves) {
+			val m = p.legal().firstOrNull { VM.from(it) == mv[0] && VM.to(it) == mv[1] && VM.promo(it) == mv[2] } ?: break
+			names.add(p.moveName(m)); played.add(m)
+			p = p.copy(); p.make(m)
+			positions.add(p)
+		}
+		ply = played.size
+	}
+
+	// значок хода по потере в оценке (как в обычном разборе: ★ — ход Fairy)
+	private fun mark(i: Int): String {
+		val before = evals[i - 1] ?: return ""; val after = evals[i] ?: return ""
+		val mover = positions[i - 1].turn
+		val bm = best[i - 1]
+		if (bm != null && plan.plan != null && FairyVariant.parse(positions[i - 1], plan.plan, bm) == played[i - 1]) return "★"
+		fun cap(x: Int) = x.coerceIn(-1500, 1500)
+		val loss = (cap(before) - cap(after)) * (if (mover == 0) 1 else -1)
+		return when { loss >= 300 -> "??"; loss >= 150 -> "?"; loss >= 70 -> "?!"; else -> "" }
+	}
+
+	override fun build(): View {
+		val root = ui.col(10, 8)
+		root.addView(ui.row(8, ui.button("‹", false) { a.pop() }, ui.col(0, 0, ui.text(title, 15f, bold = true), ui.sub(resultText, 12f))))
+		root.addView(bar, ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(18)))
+		board.v = v
+		root.addView(board, ui.lp())
+		val nav = ui.row(6)
+		for ((label, f) in listOf<Pair<String, () -> Unit>>("⏮" to { ply = 0 }, "◀" to { if (ply > 0) ply-- }, "▶" to { if (ply < played.size) ply++ }, "⏭" to { ply = played.size }))
+			nav.addView(ui.button(label, false) { f(); a.refresh() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		root.addView(nav, ui.lp())
+		val p = positions[ply]
+		board.sq = p.sq
+		board.lastMove = if (ply > 0) played[ply - 1] else 0
+		board.check = p.royals(p.turn).firstOrNull { p.attacked(it, 1 - p.turn) } ?: -1
+		board.invalidate()
+		val e = evals[ply]
+		bar.cp = e?.coerceIn(-3000, 3000) ?: p.material().coerceIn(-3000, 3000)
+		bar.label = e?.let { if (kotlin.math.abs(it) >= 9000) "M" else "%+.1f".format(it / 100f) } ?: "%+.1f".format(p.material() / 100f)
+		val info = StringBuilder(if (ply == 0) "Начальная позиция" else "Ход ${(ply + 1) / 2}${if (ply % 2 == 1) "." else "…"} ${names[ply - 1]} ${mark(ply)}")
+		best[ply]?.let { bm -> plan.plan?.let { pl -> FairyVariant.parse(p, pl, bm).takeIf { it != 0 }?.let { info.append("\nЛучший ход здесь: ${p.moveName(it)}") } } }
+		root.addView(ui.text(info.toString(), 14f, ui.t.text, true, Gravity.CENTER), ui.lp())
+		when {
+			plan.plan == null -> root.addView(ui.sub("Анализ недоступен: Fairy-Stockfish не понимает этот вариант (${plan.reason})."))
+			running -> root.addView(ui.sub("Fairy-Stockfish считает: ${evals.size} из ${positions.size} позиций. Уже посчитанное можно смотреть."))
+			evals.size < positions.size -> root.addView(ui.button("🔍 Анализ Fairy-Stockfish") { analyse() })
+			else -> root.addView(ui.sub("Анализ готов: ★ — ход как у Fairy, ?! неточность, ? ошибка, ?? зевок."))
+		}
+		// список ходов: нажатие — переход к ходу
+		val list = ui.col(0, 2)
+		for (i in names.indices step 2) {
+			val r = ui.row(6)
+			r.addView(ui.text("${i / 2 + 1}.", 13f, ui.t.sub), LinearLayout.LayoutParams(ui.dp(36), ViewGroup.LayoutParams.WRAP_CONTENT))
+			for (k in i..minOf(i + 1, names.size - 1)) {
+				val t = ui.text("${names[k]} ${mark(k + 1)}", 13f, if (ply == k + 1) ui.t.accent else ui.t.text, ply == k + 1)
+				t.setOnClickListener { ply = k + 1; a.refresh() }
+				r.addView(t, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+			}
+			list.addView(r)
+		}
+		root.addView(list, ui.lp())
+		return ui.scroll(root)
+	}
+
+	private fun analyse() {
+		val pl = plan.plan ?: return
+		running = true
+		val my = ++token
+		a.refresh()
+		val eng = Stockfish.fairyReview
+		eng.exec.execute {
+			for (i in positions.indices) {
+				if (token != my) return@execute
+				if (evals.containsKey(i)) continue
+				val p = positions[i]
+				val r = p.result()
+				val line = if (r >= 0) null else eng.customEval(a, pl.section, pl.ini, FairyVariant.fen(p, pl), p.turn == 0, 400)
+				val score = when {
+					r == 0 -> 10000; r == 1 -> -10000; r == 2 -> 0
+					line == null -> { BotRunner.main.post { if (token == my) { running = false; a.toast("Fairy-Stockfish не ответил: ${eng.lastError ?: "без ответа"}"); a.refresh() } }; return@execute }
+					else -> line.score
+				}
+				BotRunner.main.post {
+					if (token != my) return@post
+					evals[i] = score
+					line?.move?.takeIf { it.isNotEmpty() }?.let { best[i] = it }
+					if (i == positions.size - 1) running = false
+					a.refresh()
+				}
+			}
+		}
+	}
+
+	override fun dispose() { token++; Stockfish.fairyReview.stop() }
 }

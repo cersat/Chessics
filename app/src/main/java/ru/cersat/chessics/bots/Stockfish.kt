@@ -194,6 +194,39 @@ class Engine(private val name: String, private val threads: Int, val fairy: Bool
 		}
 	}
 
+	// оценка позиции варианта полной силой, с точки зрения белых (мат — ±(10000 − 10·n))
+	fun customEval(ctx: Context, section: String, ini: String, fen: String, whiteToMove: Boolean, movetime: Int): Line? {
+		if (!fairy || !start(ctx)) return null
+		synchronized(lock) {
+			try {
+				loadCustom(ctx, section, ini); setElo(0); setMultiPv(1)
+				send("position fen $fen")
+				send("go movetime $movetime")
+				val sign = if (whiteToMove) 1 else -1
+				var last: Line? = null
+				while (true) {
+					val line = reader?.readLine() ?: return null
+					if (line.startsWith("info") && line.contains(" score ")) {
+						val t = line.split(" ")
+						val si = t.indexOf("score")
+						if (si < 0 || si + 2 >= t.size) continue
+						var cp = 0; var mate = 0
+						if (t[si + 1] == "cp") cp = t[si + 2].toIntOrNull() ?: 0 else if (t[si + 1] == "mate") mate = t[si + 2].toIntOrNull() ?: 0
+						val pi = t.indexOf("pv")
+						val pv = if (pi >= 0) t.subList(pi + 1, t.size) else emptyList()
+						last = Line(cp * sign, mate * sign, pv.firstOrNull() ?: "", pv)
+					}
+					if (line.startsWith("bestmove")) {
+						val best = line.split(" ").getOrNull(1)?.takeIf { it != "(none)" } ?: ""
+						return last?.let { Line(it.cp, it.mate, best.ifEmpty { it.move }, it.pv) } ?: Line(0, 0, best, listOf(best))
+					}
+				}
+			} catch (e: Exception) { fail(e); return null }
+		}
+		@Suppress("UNREACHABLE_CODE")
+		return null
+	}
+
 	fun customPerft(ctx: Context, section: String, ini: String, fen: String, depth: Int): Long? {
 		if (!fairy || !start(ctx)) return null
 		synchronized(lock) {
@@ -274,8 +307,9 @@ object Stockfish {
 	val play get() = sfPlay
 	val analysis get() = sfAnalysis
 
-	// Fairy для вариантов из конструктора
+	// Fairy для вариантов из конструктора: ходы и разбор партий
 	val fairyCustom get() = fPlay
+	val fairyReview get() = fAnalysis
 
 	fun stopPlay() { sfPlay.stop(); fPlay.stop() }
 	fun newGame() { sfPlay.newGame(); fPlay.newGame() }

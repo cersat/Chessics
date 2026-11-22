@@ -1,5 +1,6 @@
 package ru.cersat.chessics.ui
 
+import ru.cersat.chessics.R
 import android.app.Activity
 import android.app.AlertDialog
 import android.appwidget.AppWidgetManager
@@ -202,11 +203,15 @@ open class MainActivity : Activity() {
 
 	private fun buildNav(active: Int) {
 		nav.removeAllViews()
-		val items = listOf("♟" to "Играть", "🧩" to "Задачи", "🛠" to "Варианты", "💎" to "Магазин", "👤" to "Профиль")
+		val items = listOf(R.drawable.ic_nav_play to "Играть", R.drawable.ic_nav_puzzle to "Задачи", R.drawable.ic_nav_variants to "Варианты",
+			R.drawable.ic_nav_shop to "Магазин", R.drawable.ic_nav_profile to "Профиль")
 		items.forEachIndexed { i, (ic, label) ->
 			val sel = i == active
 			val c = if (sel) ui.t.accent else ui.t.sub
-			val box = ui.col(0, 0, ui.text(ic, 20f, c, gravity = Gravity.CENTER), ui.text(label, 11f, c, sel, Gravity.CENTER))
+			val icon = android.widget.ImageView(this).apply { setImageResource(ic); setColorFilter(c) }
+			val box = ui.col(0, 0)
+			box.addView(icon, LinearLayout.LayoutParams(ui.dp(24), ui.dp(24)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+			box.addView(ui.text(label, 11f, c, sel, Gravity.CENTER))
 			box.gravity = Gravity.CENTER
 			box.setPadding(0, ui.dp(4), 0, ui.dp(4))
 			box.setOnClickListener { if (!sel) showTab(i) }

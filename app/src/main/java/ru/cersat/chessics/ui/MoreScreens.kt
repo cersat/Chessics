@@ -173,7 +173,8 @@ class ProfileScreen(a: MainActivity) : Screen(a) {
 		c.addView(ui.space(12))
 		val stats = listOf(
 			"Партий" to st.stat("games"), "Побед" to st.stat("wins"), "Ничьих" to st.stat("draws"), "Поражений" to st.stat("losses"),
-			"Задач" to st.stat("puzzles"), "Лучшая серия" to st.bestStreak, "Вдвоём" to st.stat("hvh"), "Подсказок" to st.stat("hints")
+			"Задач" to st.stat("puzzles"), "Лучшая серия" to st.bestStreak, "Вдвоём" to st.stat("hvh"), "Подсказок" to st.stat("hints"),
+			"Бриллиантовых ходов" to st.stat("brilliant"), "Своих вариантов" to VariantStore.list(st).size
 		)
 		c.addView(grid(stats))
 		val best = st.stat("bestWinElo")
@@ -243,15 +244,24 @@ class HistoryScreen(a: MainActivity) : Screen(a) {
 			val o = arr.getJSONObject(i)
 			val r = ui.row(10)
 			r.setPadding(ui.dp(14), ui.dp(12), ui.dp(10), ui.dp(12))
-			val plies = o.optString("uci").split(' ').count { it.isNotBlank() }
+			val custom = o.optJSONObject("custom")
+			val plies = if (custom != null) (o.optJSONArray("vmoves")?.length() ?: 0) else o.optString("uci").split(' ').count { it.isNotBlank() }
+			val vname = if (custom != null) " · ${custom.optString("name", "свой вариант")}" else o.optInt("variant").takeIf { it > 0 }?.let { " · ${ru.cersat.chessics.chess.V.NAMES[it]}" } ?: ""
 			val info = ui.col(0, 2,
-				ui.text("${o.optString("w")} — ${o.optString("b")}" + (o.optInt("variant").takeIf { it > 0 }?.let { " · ${ru.cersat.chessics.chess.V.NAMES[it]}" } ?: ""), 15f, bold = true),
+				ui.text("${o.optString("w")} — ${o.optString("b")}$vname", 15f, bold = true),
 				ui.sub("${o.optString("res")} · ${o.optString("reason")} · ${(plies + 1) / 2} ход.", 12f),
 				ui.sub(o.optString("date") + if (o.optString("tc").isNotEmpty()) " · ${o.optString("tc")}" else "", 11f))
 			r.addView(info, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 			r.addView(ui.button("🗑", false) { a.store.deleteGame(i); a.refresh() })
 			ui.clickable(r, ui.t.card, 16f) {
 				val res = when (o.optString("res")) { "1-0" -> "Победа белых"; "0-1" -> "Победа чёрных"; "1/2-1/2" -> "Ничья"; else -> "" }
+				if (custom != null) {
+					val arr = o.optJSONArray("vmoves") ?: org.json.JSONArray()
+					val mv = List(arr.length()) { k -> arr.getJSONArray(k).let { intArrayOf(it.getInt(0), it.getInt(1), it.getInt(2)) } }
+					a.push(VariantReviewScreen(a, ru.cersat.chessics.chess.Variant.from(custom), mv, "${o.optString("w")} — ${o.optString("b")}$vname",
+						if (res.isEmpty()) "" else "$res · ${o.optString("reason")}"))
+					return@clickable
+				}
 				a.push(ReviewScreen(a, o.optString("fen", Position.START), o.optString("uci"), o.optString("w"), o.optString("b"),
 					if (res.isEmpty()) "" else "$res · ${o.optString("reason")}", o.optInt("variant")))
 			}

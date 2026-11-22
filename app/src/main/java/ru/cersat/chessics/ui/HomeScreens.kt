@@ -1,5 +1,6 @@
 package ru.cersat.chessics.ui
 
+import ru.cersat.chessics.R
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -100,25 +101,25 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 			} catch (e: Exception) { st.setStr("current", "") }
 		}
 
-		box.addView(modeCard("🤖", "Играть с ботом", "Stockfish 1350–3000 и полная сила, Материал, Алгоритм, Случайный") {
+		box.addView(modeCard(R.drawable.ic_mode_bot, "Играть с ботом", "Stockfish 1350–3000 и полная сила, Материал, Алгоритм, Случайный") {
 			a.push(SetupScreen(a, SetupScreen.Mode.BOT))
 		})
-		box.addView(modeCard("👥", "Вдвоём на одном телефоне", "Телефон — это доска: лицом к лицу или передавая телефон, с шахматными часами") {
+		box.addView(modeCard(R.drawable.ic_mode_hvh, "Вдвоём на одном телефоне", "Телефон — это доска: лицом к лицу или передавая телефон, с шахматными часами") {
 			a.push(SetupScreen(a, SetupScreen.Mode.HVH))
 		})
-		box.addView(modeCard("🌐", "Онлайн · Lichess", "Живые соперники, вызов друга, Stockfish на сервере lichess. Нужен свой аккаунт") {
+		box.addView(modeCard(R.drawable.ic_mode_online, "Онлайн · Lichess", "Живые соперники, вызов друга, Stockfish на сервере lichess. Нужен свой аккаунт") {
 			a.push(LichessScreen(a))
 		})
-		box.addView(modeCard("🎨", "Шахматы на четверых", "Две команды на доске 14×14: люди и боты в любом составе") {
+		box.addView(modeCard(R.drawable.ic_mode_four, "Шахматы на четверых", "Две команды на доске 14×14: люди и боты в любом составе") {
 			a.push(FourSetupScreen(a))
 		})
-		box.addView(modeCard("📡", "По Wi-Fi или Bluetooth", "Партия между двумя телефонами рядом, без интернета") {
+		box.addView(modeCard(R.drawable.ic_mode_lan, "По Wi-Fi или Bluetooth", "Партия между двумя телефонами рядом, без интернета") {
 			a.push(LanScreen(a))
 		})
-		box.addView(modeCard("📚", "Тренировка", "Дебюты ход за ходом и эндшпиль против Stockfish") {
+		box.addView(modeCard(R.drawable.ic_mode_training, "Тренировка", "Дебюты ход за ходом и эндшпиль против Stockfish") {
 			a.push(TrainingScreen(a))
 		})
-		box.addView(modeCard("⚙", "Своя партия", "Любой игрок за каждую сторону: бот против бота, человек за обе стороны…") {
+		box.addView(modeCard(R.drawable.ic_mode_custom, "Своя партия", "Любой игрок за каждую сторону: бот против бота, человек за обе стороны…") {
 			a.push(SetupScreen(a, SetupScreen.Mode.CUSTOM))
 		})
 		box.addView(dailyCard())
@@ -195,10 +196,10 @@ class HomeScreen(a: MainActivity) : Screen(a) {
 		return c
 	}
 
-	private fun modeCard(icon: String, title: String, desc: String, onClick: () -> Unit): View {
+	private fun modeCard(icon: Int, title: String, desc: String, onClick: () -> Unit): View {
 		val r = ui.row(14)
 		r.setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(16))
-		r.addView(ui.text(icon, 30f))
+		r.addView(ImageView(a).apply { setImageResource(icon); setColorFilter(ui.t.accent) }, LinearLayout.LayoutParams(ui.dp(32), ui.dp(32)))
 		r.addView(ui.col(0, 2, ui.text(title, 17f, bold = true), ui.sub(desc)), ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		r.addView(ui.text("›", 26f, ui.t.sub))
 		ui.clickable(r, ui.t.card, 18f, onClick)
