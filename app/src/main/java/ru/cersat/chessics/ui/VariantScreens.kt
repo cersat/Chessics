@@ -100,6 +100,7 @@ class VBoardView(ctx: Context) : View(ctx) {
 	// значок типа хода, стрелка лучшего хода и вспышка — как в обычном разборе
 	val fx = MoveFx(this, { i -> col(i) * cell to row(i) * cell }, { cell })
 	var hint = 0
+	var showPromo = -1 // цвет, чьи клетки превращения показать уголками (редактор)
 
 	fun clearSel() { selected = -1; invalidate() }
 
@@ -130,6 +131,18 @@ class VBoardView(ctx: Context) : View(ctx) {
 			if (lastMove != 0 && (i == VM.from(lastMove) || i == VM.to(lastMove))) { p.color = board.last; c.drawRect(x, y, x + s, y + s, p) }
 			if (i == selected) { p.color = board.select; c.drawRect(x, y, x + s, y + s, p) }
 			if (i == check) { p.color = 0x88FF2020.toInt(); c.drawCircle(x + s / 2, y + s / 2, s * 0.5f, p) }
+		}
+		// клетки превращения: уголок цвета пешек
+		if (showPromo >= 0) {
+			p.color = if (showPromo == 0) 0xFFF4F1E8.toInt() else 0xFF26282E.toInt()
+			val edge = if (showPromo == 0) 0xFF26282E.toInt() else 0xFFF4F1E8.toInt()
+			for (i in v.promoCells(showPromo)) {
+				val x = col(i) * s; val y = row(i) * s
+				val tri = android.graphics.Path(); tri.moveTo(x, y); tri.lineTo(x + s * 0.42f, y); tri.lineTo(x, y + s * 0.42f); tri.close()
+				p.style = Paint.Style.FILL; p.color = if (showPromo == 0) 0xFFF4F1E8.toInt() else 0xFF26282E.toInt(); c.drawPath(tri, p)
+				p.style = Paint.Style.STROKE; p.strokeWidth = s * 0.04f; p.color = edge; c.drawPath(tri, p)
+				p.style = Paint.Style.FILL
+			}
 		}
 		// холм: золотая рамка по клеткам
 		if (v.win == Variant.WIN_HILL) {
@@ -338,7 +351,7 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 	// перечитываем при каждой отрисовке: редактор фигуры сохраняет свои правки сам,
 	// и устаревшая копия здесь затёрла бы их при следующем сохранении
 	private var v: Variant = Variant.classic()
-	private var tool = 0 // 0 — поставить фигуру, 1 — стереть, 2 — заблокировать клетку
+	private var tool = "piece" // piece, erase, lock, hill, promoW, promoB
 	private var color = 0
 	private var piece = 0
 
@@ -357,11 +370,17 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		bc.addView(ui.stepper("Ширина", v.w, { d -> val nw = (v.w + d).coerceIn(Variant.MIN, Variant.MAX); if (nw != v.w) { v.resize(nw, v.h); save(); a.refresh() } }, 1))
 		bc.addView(ui.stepper("Высота", v.h, { d -> val nh = (v.h + d).coerceIn(Variant.MIN, Variant.MAX); if (nh != v.h) { v.resize(v.w, nh); save(); a.refresh() } }, 1))
 		bc.addView(ui.space(6))
-		if (tool == 3 && v.win != Variant.WIN_HILL) tool = 0
-		val tools = listOf("Фигура", "Стереть", "Блок клетки") + if (v.win == Variant.WIN_HILL) listOf("Холм") else emptyList()
-		bc.addView(ui.chips(tools.mapIndexed { i, n -> n to (tool == i) }, if (tools.size == 4) 2 else 3) { tool = it; a.refresh() })
-		if (tool == 3) bc.addView(ui.sub("Нажимай на клетки, чтобы добавить их к холму или убрать. Пока не выбрано ни одной, холм — центр доски."))
-		if (tool == 0) {
+		val hasPawns = v.pieces.any { it.pawn }
+		val tools = ArrayList<Pair<String, String>>()
+		tools.add("piece" to "Фигура"); tools.add("erase" to "Стереть"); tools.add("lock" to "Блок клетки")
+		if (v.win == Variant.WIN_HILL) tools.add("hill" to "Холм")
+		if (hasPawns) { tools.add("promoW" to "Превращение белых"); tools.add("promoB" to "Превращение чёрных") }
+		if (tools.none { it.first == tool }) tool = "piece"
+		bc.addView(ui.chips(tools.map { it.second to (it.first == tool) }, 3) { tool = tools[it].first; a.refresh() })
+		if (tool == "hill") bc.addView(ui.sub("Нажимай на клетки, чтобы добавить их к холму или убрать. Пока не выбрано ни одной, холм — центр доски."))
+		if (tool == "promoW" || tool == "promoB") bc.addView(ui.sub("Нажимай на клетки, где ${if (tool == "promoW") "белые" else "чёрные"} пешки превращаются (или выигрывают, если победа превращением). " +
+			"Отмечены уголком. Пока не выбрано ни одной, это последняя горизонталь — ${if (tool == "promoW") v.h else 1}-я."))
+		if (tool == "piece") {
 			bc.addView(ui.space(6))
 			bc.addView(ui.chips(listOf("Белые" to (color == 0), "Чёрные" to (color == 1)), 2) { color = it; a.refresh() })
 			bc.addView(ui.space(6))
@@ -371,12 +390,15 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		bc.addView(ui.space(8))
 		val bv = VBoardView(a)
 		bv.v = v; bv.sq = v.cells
+		bv.showPromo = when (tool) { "promoW" -> 0; "promoB" -> 1; else -> -1 }
 		bv.onCell = { i ->
 			when (tool) {
-				0 -> if (v.pieces.isNotEmpty() && !v.locked[i]) { val c = Variant.code(piece, color); v.cells[i] = if (v.cells[i] == c) 0 else c }
-				1 -> { v.cells[i] = 0; v.locked[i] = false; v.hill[i] = false }
-				2 -> { v.locked[i] = !v.locked[i]; if (v.locked[i]) { v.cells[i] = 0; v.hill[i] = false } }
-				else -> if (!v.locked[i]) v.hill[i] = !v.hill[i]
+				"piece" -> if (v.pieces.isNotEmpty() && !v.locked[i]) { val c = Variant.code(piece, color); v.cells[i] = if (v.cells[i] == c) 0 else c }
+				"erase" -> { v.cells[i] = 0; v.locked[i] = false; v.hill[i] = false; v.promoWhite[i] = false; v.promoBlack[i] = false }
+				"lock" -> { v.locked[i] = !v.locked[i]; if (v.locked[i]) { v.cells[i] = 0; v.hill[i] = false; v.promoWhite[i] = false; v.promoBlack[i] = false } }
+				"hill" -> if (!v.locked[i]) v.hill[i] = !v.hill[i]
+				"promoW" -> if (!v.locked[i]) v.promoWhite[i] = !v.promoWhite[i]
+				"promoB" -> if (!v.locked[i]) v.promoBlack[i] = !v.promoBlack[i]
 			}
 			save(); bv.invalidate()
 		}
@@ -392,10 +414,10 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		rc.addView(ui.chips(Variant.WIN_NAMES.mapIndexed { i, n -> n to (i == v.win) }, 2) { v.win = it; save(); a.refresh() })
 		if (v.win == Variant.WIN_CHECKS) rc.addView(ui.stepper("Сколько шахов", v.nChecks, { d -> v.nChecks = (v.nChecks + d).coerceIn(1, 20); save(); a.refresh() }, 1))
 		if (v.win == Variant.WIN_HILL) rc.addView(ui.sub("Холм отмечен на доске золотой рамкой. Свои клетки холма — инструмент «Холм» над доской; если не выбрано ни одной, холм — центр."))
-		if (v.win == Variant.WIN_PROMO) rc.addView(ui.sub("Побеждает тот, чья пешка первой дойдёт до последней горизонтали. Мат тоже выигрывает, если есть король."))
-		if (v.win == Variant.WIN_PROMO && v.pieces.none { it.pawn }) rc.addView(ui.text("⚠ Нет ни одной пешки — так победить не получится.", 13f, 0xFFFFB13B.toInt()))
+		if (v.win == Variant.WIN_PROMO) rc.addView(ui.sub("Побеждает тот, чья пешка первой дойдёт до клетки превращения (по умолчанию — последней горизонтали; свои клетки — инструменты «Превращение» над доской). Мат тоже выигрывает, если есть король."))
+		if (v.win == Variant.WIN_PROMO && v.pieces.none { it.pawn }) rc.addView(ui.text("Внимание: Нет ни одной пешки — так победить не получится.", 13f, 0xFFFFB13B.toInt()))
 		if ((v.win == Variant.WIN_MATE || v.win == Variant.WIN_CAPTURE_ROYAL || v.win == Variant.WIN_HILL || v.win == Variant.WIN_CHECKS) && v.pieces.none { it.royal })
-			rc.addView(ui.text("⚠ Нет ни одной королевской фигуры — побеждает тот, кто заберёт все фигуры соперника.", 13f, 0xFFFFB13B.toInt()))
+			rc.addView(ui.text("Внимание: Нет ни одной королевской фигуры — побеждает тот, кто заберёт все фигуры соперника.", 13f, 0xFFFFB13B.toInt()))
 		rc.addView(ui.space(6))
 		rc.addView(ui.sub("Пат"))
 		rc.addView(ui.chips(Variant.STALEMATE_NAMES.mapIndexed { i, n -> n to (i == v.stalemate) }, 3) { v.stalemate = it; save(); a.refresh() })
@@ -407,7 +429,7 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		if (v.shuffle) rc.addView(ui.sub("Перед каждой партией фигуры первой линии встают случайно, у чёрных — зеркально. Одинаковые фигуры, ходящие только по своему цвету (как слоны), — на клетки разного цвета, король — между двумя рокирующимися фигурами. Рокировка — по правилам конструктора: король идёт на две клетки к ладье."))
 		rc.addView(ui.space(6))
 		if (v.win != Variant.WIN_PROMO) {
-			rc.addView(ui.sub("Пешки превращаются на последней горизонтали в:"))
+			rc.addView(ui.sub("Пешки превращаются на клетках превращения (по умолчанию — последняя горизонталь; свои клетки — инструменты «Превращение» над доской) в:"))
 			val promoable = v.pieces.filter { !it.royal && !it.pawn }
 			if (promoable.isEmpty()) rc.addView(ui.sub("— нет подходящих фигур"))
 			else rc.addView(ui.chips(promoable.map { "${it.symbol} ${it.name}" to (it.name in v.promo) }, 3) { i ->
@@ -415,7 +437,7 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 				if (n in v.promo) v.promo.remove(n) else v.promo.add(n)
 				save(); a.refresh()
 			})
-			if (v.promo.isEmpty()) rc.addView(ui.sub("Ничего не выбрано — пешка на последней горизонтали остаётся пешкой."))
+			if (v.promo.isEmpty()) rc.addView(ui.sub("Ничего не выбрано — пешка на клетке превращения остаётся пешкой."))
 		}
 		box.addView(rc)
 
@@ -480,6 +502,19 @@ class PieceEditorScreen(a: MainActivity, private val vi: Int, private val pi: In
 			save(); a.refresh()
 		})
 		box.addView(ui.sub("Король — его мат или взятие решает партию. Пешка — двойной ход с места, взятие на проходе, превращение. Рокируется — король может рокироваться с этой фигурой."))
+		if (d.royal) {
+			val cc = ui.card()
+			cc.addView(ui.text("Рокировки", 17f, bold = true))
+			cc.addView(ui.sub("Король идёт к фигуре с флагом «Рокируется» минимум на 2 клетки (на 1 — это был бы обычный ход короля), она встаёт рядом с ним с другой стороны. Обе фигуры не должны были ходить, между ними пусто, а при шахе (если он есть в варианте) нельзя рокироваться из-под шаха и через битые клетки."))
+			cc.addView(ui.chips(listOf("Короткая (вправо, к h)" to d.castleShort, "Длинная (влево, к a)" to d.castleLong), 2) {
+				if (it == 0) d.castleShort = !d.castleShort else d.castleLong = !d.castleLong
+				save(); a.refresh()
+			})
+			if (d.castleShort) cc.addView(ui.stepper("Короткая: король идёт на", d.stepsShort, { dv -> d.stepsShort = (d.stepsShort + dv).coerceIn(2, 6); save(); a.refresh() }, 1))
+			if (d.castleLong) cc.addView(ui.stepper("Длинная: король идёт на", d.stepsLong, { dv -> d.stepsLong = (d.stepsLong + dv).coerceIn(2, 6); save(); a.refresh() }, 1))
+			if (!v.castling) cc.addView(ui.text("Внимание: В правилах варианта рокировка выключена.", 13f, 0xFFFFB13B.toInt()))
+			box.addView(cc)
+		}
 
 		val gc = ui.card()
 		gc.addView(ui.text("Ходы", 17f, bold = true))

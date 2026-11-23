@@ -152,7 +152,12 @@ object Neural {
 			else -> "побеждает мат"
 		})
 		parts.add(Variant.STALEMATE_NAMES[v.stalemate].lowercase())
-		parts.add(if (v.castling) "рокировка есть (король идёт на две клетки к ладье)" else "рокировки нет")
+		val king = v.pieces.firstOrNull { it.royal }
+		parts.add(if (v.castling && king != null && (king.castleShort || king.castleLong))
+			"рокировка есть (" + listOfNotNull(
+				if (king.castleShort) "короткая — король на ${king.stepsShort} кл. вправо к фигуре, что рокируется" else null,
+				if (king.castleLong) "длинная — король на ${king.stepsLong} кл. влево" else null).joinToString(", ") + "; та фигура встаёт рядом с королём с другой стороны)"
+		else "рокировки нет")
 		if (v.pieces.any { it.pawn }) {
 			parts.add(if (v.pawnDouble) "пешка с места может пойти на две клетки" else "двойного хода пешки нет")
 			parts.add(if (v.enPassant) "взятие на проходе есть" else "взятия на проходе нет")

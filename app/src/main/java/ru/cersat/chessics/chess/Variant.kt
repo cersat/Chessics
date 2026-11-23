@@ -29,17 +29,29 @@ class PieceDef(
 	var castler: Boolean, // с ним королевская фигура может рокироваться
 	val moves: MutableList<MoveRule>,
 ) {
+	// рокировки королевской фигуры: короткая — к вертикали h (вправо), длинная — к вертикали a; на сколько клеток идёт король
+	var castleShort = true
+	var castleLong = true
+	var stepsShort = 2
+	var stepsLong = 2
+
 	fun json(): JSONObject = JSONObject().put("name", name).put("symbol", symbol).put("art", art).put("value", value)
 		.put("royal", royal).put("pawn", pawn).put("castler", castler).put("moves", JSONArray().apply { moves.forEach { put(it.json()) } })
+		.put("castleShort", castleShort).put("castleLong", castleLong).put("stepsShort", stepsShort).put("stepsLong", stepsLong)
 
-	fun copy() = PieceDef(name, symbol, art, value, royal, pawn, castler, moves.toMutableList())
+	fun copy() = PieceDef(name, symbol, art, value, royal, pawn, castler, moves.toMutableList()).also {
+		it.castleShort = castleShort; it.castleLong = castleLong; it.stepsShort = stepsShort; it.stepsLong = stepsLong
+	}
 
 	companion object {
 		fun from(o: JSONObject): PieceDef {
 			val arr = o.optJSONArray("moves") ?: JSONArray()
 			return PieceDef(o.optString("name", "Фигура"), o.optString("symbol", "?"), o.optInt("art"), o.optInt("value", 300),
 				o.optBoolean("royal"), o.optBoolean("pawn"), o.optBoolean("castler"),
-				MutableList(arr.length()) { MoveRule.from(arr.getJSONObject(it)) })
+				MutableList(arr.length()) { MoveRule.from(arr.getJSONObject(it)) }).also {
+				it.castleShort = o.optBoolean("castleShort", true); it.castleLong = o.optBoolean("castleLong", true)
+				it.stepsShort = o.optInt("stepsShort", 2).coerceIn(2, 6); it.stepsLong = o.optInt("stepsLong", 2).coerceIn(2, 6)
+			}
 		}
 
 		private fun rays(vararg d: IntArray) = d.map { MoveRule(it[0], it[1], true, MoveRule.BOTH) }
@@ -76,6 +88,16 @@ class Variant(
 	var promo = mutableListOf<String>() // в кого превращаются пешки (имена фигур); пусто — не превращаются
 	var shuffle = false // перемешивать первую линию перед каждой партией, как в Chess960
 	var hill: BooleanArray = BooleanArray(w * h) // клетки холма; ни одной — центр доски
+	// клетки превращения пешек каждого цвета; ни одной — последняя горизонталь
+	var promoWhite: BooleanArray = BooleanArray(w * h)
+	var promoBlack: BooleanArray = BooleanArray(w * h)
+
+	fun promoCells(color: Int): List<Int> {
+		val chosen = (if (color == 0) promoWhite else promoBlack).let { z -> z.indices.filter { z[it] && !locked[it] } }
+		if (chosen.isNotEmpty()) return chosen
+		val y = if (color == 0) h - 1 else 0
+		return (0 until w).map { idx(it, y) }
+	}
 
 	// холм: выбранные клетки, а если не выбрано ни одной — центральные 2×2 (на нечётной стороне — 1 клетка)
 	fun hillCells(): List<Int> {
@@ -97,14 +119,20 @@ class Variant(
 		.put("win", win).put("nChecks", nChecks).put("stalemate", stalemate).put("castling", castling)
 		.put("enPassant", enPassant).put("pawnDouble", pawnDouble).put("promo", JSONArray(promo)).put("shuffle", shuffle)
 		.put("hill", JSONArray().apply { hill.forEach { put(it) } })
+		.put("promoWhite", JSONArray().apply { promoWhite.forEach { put(it) } })
+		.put("promoBlack", JSONArray().apply { promoBlack.forEach { put(it) } })
 
 	fun copy(): Variant = from(json())
 
 	// изменить размер, сохранив то, что помещается
 	fun resize(nw: Int, nh: Int) {
 		val c = IntArray(nw * nh); val l = BooleanArray(nw * nh); val hl = BooleanArray(nw * nh)
-		for (y in 0 until minOf(h, nh)) for (x in 0 until minOf(w, nw)) { c[y * nw + x] = cells[idx(x, y)]; l[y * nw + x] = locked[idx(x, y)]; hl[y * nw + x] = hill[idx(x, y)] }
-		w = nw; h = nh; cells = c; locked = l; hill = hl
+		val pw = BooleanArray(nw * nh); val pb = BooleanArray(nw * nh)
+		for (y in 0 until minOf(h, nh)) for (x in 0 until minOf(w, nw)) {
+			val o = idx(x, y); val n = y * nw + x
+			c[n] = cells[o]; l[n] = locked[o]; hl[n] = hill[o]; pw[n] = promoWhite[o]; pb[n] = promoBlack[o]
+		}
+		w = nw; h = nh; cells = c; locked = l; hill = hl; promoWhite = pw; promoBlack = pb
 	}
 
 	// расстановка для очередной партии: при перемешивании — случайная первая линия.
@@ -180,6 +208,8 @@ class Variant(
 			v.pawnDouble = o.optBoolean("pawnDouble", true)
 			v.shuffle = o.optBoolean("shuffle", false)
 			o.optJSONArray("hill")?.let { a -> if (a.length() == w * h) v.hill = BooleanArray(w * h) { a.optBoolean(it) } }
+			o.optJSONArray("promoWhite")?.let { a -> if (a.length() == w * h) v.promoWhite = BooleanArray(w * h) { a.optBoolean(it) } }
+			o.optJSONArray("promoBlack")?.let { a -> if (a.length() == w * h) v.promoBlack = BooleanArray(w * h) { a.optBoolean(it) } }
 			o.optJSONArray("promo")?.let { a -> for (i in 0 until a.length()) v.promo.add(a.getString(i)) }
 			// чистим ссылки на несуществующие фигуры
 			for (i in v.cells.indices) if (v.cells[i] != 0 && !v.has(v.cells[i])) v.cells[i] = 0
@@ -250,6 +280,7 @@ class VPos(val v: Variant) {
 	val hasRoyalStart = IntArray(2).also { r -> for (c in v.cells) if (c != 0 && (c and 0xFF) - 1 in royalTypes) r[c shr 8]++ }
 	private val usesCheck get() = (v.win == Variant.WIN_MATE || v.win == Variant.WIN_HILL || v.win == Variant.WIN_CHECKS || v.win == Variant.WIN_PROMO) && royalTypes.isNotEmpty()
 	private val hillSet by lazy { v.hillCells().toHashSet() }
+	private val promoSets by lazy { arrayOf(v.promoCells(0).toHashSet(), v.promoCells(1).toHashSet()) }
 
 	fun copy(): VPos {
 		val p = VPos(v)
@@ -265,7 +296,8 @@ class VPos(val v: Variant) {
 	fun x(s: Int) = s % v.w
 	fun y(s: Int) = s / v.w
 	private fun ok(x: Int, y: Int) = x in 0 until v.w && y in 0 until v.h && !v.locked[y * v.w + x]
-	fun lastRank(color: Int, s: Int) = if (color == 0) y(s) == v.h - 1 else y(s) == 0
+	// клетка превращения для пешки этого цвета
+	fun lastRank(color: Int, s: Int) = s in promoSets[color]
 
 	// все клетки, куда фигура может пойти (без учёта шаха).
 	// attacks — только клетки, которые фигура бьёт (в том числе пустые), для проверки шаха
@@ -332,15 +364,19 @@ class VPos(val v: Variant) {
 			if (moved[k]) continue
 			if (usesCheck && attacked(k, 1 - turn)) continue
 			val ky = y(k); val kx = x(k)
+			val kd = def(sq[k])
 			for (dir in intArrayOf(-1, 1)) {
+				// вправо (к вертикали h) — короткая, влево — длинная; у каждой свой шаг короля
+				if (if (dir > 0) !kd.castleShort else !kd.castleLong) continue
+				val steps = if (dir > 0) kd.stepsShort else kd.stepsLong
 				var x = kx + dir
 				while (x in 0 until v.w && sq[v.idx(x, ky)] == 0 && !v.locked[v.idx(x, ky)]) x += dir
 				if (x !in 0 until v.w) continue
 				val r = v.idx(x, ky)
 				val rc = sq[r]
-				if (rc == 0 || color(rc) != turn || !def(rc).castler || moved[r] || kotlin.math.abs(x - kx) < 3) continue
-				val t = v.idx(kx + 2 * dir, ky)
-				if (usesCheck && (attacked(v.idx(kx + dir, ky), 1 - turn) || attacked(t, 1 - turn))) continue
+				if (rc == 0 || color(rc) != turn || !def(rc).castler || moved[r] || kotlin.math.abs(x - kx) <= steps) continue
+				val t = v.idx(kx + steps * dir, ky)
+				if (usesCheck && (1..steps).any { attacked(v.idx(kx + it * dir, ky), 1 - turn) }) continue
 				out.add(VM.make(k, t, 0, VM.CASTLE))
 			}
 		}
@@ -373,8 +409,9 @@ class VPos(val v: Variant) {
 			val r = v.idx(rx, y(f))
 			val rook = sq[r]
 			sq[r] = 0
-			sq[v.idx(x(f) + dir, y(f))] = rook
-			moved[v.idx(x(f) + dir, y(f))] = true
+			// ладья встаёт рядом с королём с внутренней стороны
+			sq[v.idx(x(t) - dir, y(f))] = rook
+			moved[v.idx(x(t) - dir, y(f))] = true
 		}
 		if (d.pawn && lastRank(color(code), t)) promoted = color(code)
 		sq[t] = if (VM.promo(m) != 0) Variant.code(VM.promo(m) - 1, color(code)) else code

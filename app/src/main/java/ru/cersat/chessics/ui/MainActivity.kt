@@ -180,7 +180,13 @@ open class MainActivity : Activity() {
 		if (stack.isEmpty()) showTab(0) else render()
 	}
 
-	fun refresh() { if (stack.isNotEmpty()) render() }
+	// перерисовка того же экрана — прокрутку сохраняем, иначе страница прыгает наверх после каждого нажатия
+	fun refresh() {
+		if (stack.isEmpty()) return
+		val y = (content.getChildAt(0) as? android.widget.ScrollView)?.scrollY ?: 0
+		render()
+		if (y > 0) (content.getChildAt(0) as? android.widget.ScrollView)?.let { sv -> sv.post { sv.scrollTo(0, y) } }
+	}
 
 	fun showTab(i: Int) {
 		stack.forEach { it.dispose() }

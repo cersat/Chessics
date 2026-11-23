@@ -103,8 +103,8 @@ object FairyVariant {
 			val promo = v.promo.mapNotNull { n -> v.pieces.indexOfFirst { it.name == n }.takeIf { it >= 0 && it !in asKing } }.map { letters[it] }.joinToString("")
 			val promo2 = if (v.win == Variant.WIN_PROMO) "" else promo
 			lines.add("promotionPieceTypes = ${promo2.ifEmpty { "-" }}")
-			lines.add("promotionRegionWhite = *${v.h}")
-			lines.add("promotionRegionBlack = *1")
+			lines.add("promotionRegionWhite = ${v.promoCells(0).joinToString(" ") { sqName(v, it) }}")
+			lines.add("promotionRegionBlack = ${v.promoCells(1).joinToString(" ") { sqName(v, it) }}")
 			lines.add("mandatoryPawnPromotion = ${promo2.isNotEmpty()}")
 			// двойной ход задан в Бетце как «начальный» ход; Fairy разрешает его на клетках региона — это стартовые клетки пешек
 			lines.add("doubleStep = ${v.pawnDouble}")
@@ -128,8 +128,9 @@ object FairyVariant {
 					}
 					return null
 				}
-				val rk = rookFile(1)?.takeIf { it - kx >= 3 && kx + 2 < v.w }
-				val rq = rookFile(-1)?.takeIf { kx - it >= 3 && kx - 2 >= 0 }
+				val kd = v.piece(v.cells[wk[0]])
+				val rk = rookFile(1)?.takeIf { kd.castleShort && it - kx > kd.stepsShort }
+				val rq = rookFile(-1)?.takeIf { kd.castleLong && kx - it > kd.stepsLong }
 				if (rk != null || rq != null) {
 					// у чёрных должно быть то же самое зеркально
 					fun mirrored(x: Int) = v.cells[v.idx(x, v.h - 1 - ky)].let { c -> c != 0 && (c shr 8) == 1 && (c and 0xFF) == (v.cells[v.idx(x, ky)] and 0xFF) }
@@ -143,8 +144,8 @@ object FairyVariant {
 					lines.add("castlingKingFile = ${file(kx)}")
 					lines.add("castlingKingPiece = $kingLetter")
 					lines.add("castlingRookPieces = $castlers")
-					if (rk != null) { lines.add("castlingKingsideFile = ${file(kx + 2)}"); lines.add("castlingRookKingsideFile = ${file(rk)}") }
-					if (rq != null) { lines.add("castlingQueensideFile = ${file(kx - 2)}"); lines.add("castlingRookQueensideFile = ${file(rq)}") }
+					if (rk != null) { lines.add("castlingKingsideFile = ${file(kx + kd.stepsShort)}"); lines.add("castlingRookKingsideFile = ${file(rk)}") }
+					if (rq != null) { lines.add("castlingQueensideFile = ${file(kx - kd.stepsLong)}"); lines.add("castlingRookQueensideFile = ${file(rq)}") }
 				}
 			}
 		}
@@ -167,7 +168,9 @@ object FairyVariant {
 			v.win == Variant.WIN_PROMO -> {
 				val pawnTypes = v.pieces.indices.filter { v.pieces[it].pawn && it !in asKing }
 				if (pawnTypes.size != 1) return Result(null, if (pawnTypes.isEmpty()) "нет пешек, а победа — превращением" else "несколько видов пешек при победе превращением")
-				lines.add("flagPiece = ${letters[pawnTypes[0]]}"); lines.add("flagRegionWhite = *${v.h}"); lines.add("flagRegionBlack = *1")
+				lines.add("flagPiece = ${letters[pawnTypes[0]]}")
+				lines.add("flagRegionWhite = ${v.promoCells(0).joinToString(" ") { sqName(v, it) }}")
+				lines.add("flagRegionBlack = ${v.promoCells(1).joinToString(" ") { sqName(v, it) }}")
 			}
 			v.win == Variant.WIN_CHECKS -> lines.add("checkCounting = true")
 		}
