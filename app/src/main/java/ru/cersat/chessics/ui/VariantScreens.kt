@@ -85,6 +85,8 @@ object VArt {
 }
 
 // Доска варианта: и для редактора (рисование по клеткам), и для партии (выбор и ход)
+private val ZONE_COLORS = intArrayOf(0xFF1FA463.toInt(), 0xFF8E4FD6.toInt(), 0xFFE08A00.toInt(), 0xFFD6336C.toInt())
+
 class VBoardView(ctx: Context) : View(ctx) {
 	var v: Variant = Variant.classic()
 	var sq: IntArray = v.cells
@@ -161,7 +163,14 @@ class VBoardView(ctx: Context) : View(ctx) {
 			val edge = if (four) 0xFFFFFFFF.toInt() else if (markColor == 0) 0xFF26282E.toInt() else 0xFFF4F1E8.toInt()
 			for (i in v.promoCells(markColor)) tri(col(i) * s, row(i) * s, s, colorOf(markColor), edge)
 		} else if (mark == "zone") {
-			for (i in v.zoneCells(markColor)) { p.color = (colorOf(markColor) and 0x00FFFFFF) or 0x66000000; c.drawRect(col(i) * s, row(i) * s, col(i) * s + s, row(i) * s + s, p) }
+			// цвет зоны не зависит от цвета фигур (иначе белая зона сливается с белыми клетками): у каждого игрока свой оттенок и рамка
+			val hue = ZONE_COLORS[markColor]
+			for (i in v.zoneCells(markColor)) {
+				val x = col(i) * s; val y = row(i) * s
+				p.style = Paint.Style.FILL; p.color = (hue and 0x00FFFFFF) or 0x88000000.toInt(); c.drawRect(x, y, x + s, y + s, p)
+				p.style = Paint.Style.STROKE; p.strokeWidth = s * 0.07f; p.color = hue; c.drawRect(x + s * 0.05f, y + s * 0.05f, x + s * 0.95f, y + s * 0.95f, p)
+				p.style = Paint.Style.FILL
+			}
 		} else if (mark == "shuf") {
 			coord.textSize = s * 0.3f
 			v.shuf[markColor].forEachIndexed { k, i ->
@@ -448,8 +457,8 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 			"hill" -> "Проведи по клеткам, чтобы добавить их к холму или убрать. Пока не выбрано ни одной, холм — центр доски."
 			"promo" -> "Проведи по клеткам, где ${colorGen[color]} пешки превращаются (или выигрывают, если победа превращением). Отмечены уголком. Пока не выбрано ни одной — " +
 				(if (v.players == 4) "средняя линия игрока." else "последняя горизонталь — ${if (color == 0) v.h else 1}-я.")
-			"zone" -> "Проведи по клеткам, куда ${colorGen[color]} могут ставить фигуры. Ставят те фигуры этого цвета, что лежат на доске (это их набор). Пока не выбрано ни одной — две ближние к игроку горизонтали."
-			"shuf" -> "Нажимай клетки в нужном порядке: перед каждой партией фигуры на выбранных клетках ${colorGen[color]} случайно меняются местами. Если рокировка из-за этого не получится, приложение предупредит перед партией."
+			"zone" -> "Проведи по клеткам, куда ${colorGen[color]} могут ставить фигуры. Ставят фигуры из набора для расстановки (карточка «Правила»), а клетки зоны показаны цветной заливкой с рамкой. Пока не выбрано ни одной — две ближние к игроку горизонтали."
+			"shuf" -> "Нажимай клетки в нужном порядке (выбор включит перемешивание): перед каждой партией фигуры на выбранных клетках ${colorGen[color]} случайно меняются местами. Если рокировка из-за этого не получится, приложение предупредит перед партией."
 			else -> "Доска не реагирует на касания — страницу можно двигать, держа палец на доске."
 		}))
 		if (tool in listOf("piece", "promo", "zone", "shuf")) {
@@ -491,7 +500,7 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 			}
 			bv.invalidate()
 		}
-		bv.onStrokeEnd = { save() }
+		bv.onStrokeEnd = { if (tool == "shuf" && v.shuf[color].size >= 2 && !v.shuffle) { v.shuffle = true; a.refresh() }; save() }
 		bc.addView(bv, ui.lp())
 		bc.addView(ui.space(8))
 		val clr = ui.row(8)
@@ -518,34 +527,43 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		val flags = ArrayList<Pair<String, Boolean>>()
 		if (v.players == 2) { flags.add("Рокировка" to v.castling); flags.add("Взятие на проходе" to v.enPassant) }
 		flags.add("Двойной ход пешки" to v.pawnDouble)
-		if (v.players == 2) flags.add("Перемешивать первую линию" to v.shuffle)
+		flags.add("Перемешать фигуры в области" to v.shuffle)
 		flags.add("Расстановка перед партией" to v.setup)
 		rc.addView(ui.chips(flags, 2) {
 			when (flags[it].first) {
 				"Рокировка" -> v.castling = !v.castling
 				"Взятие на проходе" -> v.enPassant = !v.enPassant
 				"Двойной ход пешки" -> v.pawnDouble = !v.pawnDouble
-				"Перемешивать первую линию" -> v.shuffle = !v.shuffle
+				"Перемешать фигуры в области" -> v.shuffle = !v.shuffle
 				else -> v.setup = !v.setup
 			}
 			save(); a.refresh()
 		})
-		if ((0 until v.players).any { v.shuf[it].size >= 2 }) {
-			rc.addView(ui.sub("Перемешивание клеток (инструмент «Перемешать»): перед каждой партией фигуры на выбранных клетках каждого цвета меняются местами."))
-			// если ни одна расстановка не оставляет рокировку возможной — предупреждаем сразу, а не перед партией
-			val warn = (1..20).firstNotNullOfOrNull { v.dealt().dealtWarning }
-			if (warn != null) rc.addView(ui.text("Внимание: $warn.", 13f, 0xFFFFB13B.toInt()))
+		if (v.shuffle) {
+			val areas = (0 until v.players).any { v.shuf[it].size >= 2 }
+			if (areas) {
+				rc.addView(ui.sub("Перед каждой партией фигуры в выбранных областях (инструмент «Перемешать») каждого цвета меняются местами."))
+				// если ни одна расстановка не оставляет рокировку возможной — предупреждаем сразу, а не перед партией
+				val warn = (1..20).firstNotNullOfOrNull { v.dealt().dealtWarning }
+				if (warn != null) rc.addView(ui.text("Внимание: $warn.", 13f, 0xFFFFB13B.toInt()))
+			} else if (v.players == 2) rc.addView(ui.sub("Область не выбрана — перемешивается первая линия: фигуры встают случайно, у чёрных — зеркально. Одинаковые фигуры, ходящие только по своему цвету (как слоны), — на клетки разного цвета, король — между двумя рокирующимися фигурами. Свою область можно выбрать инструментом «Перемешать»."))
+			else rc.addView(ui.text("Внимание: перемешивание включено, но ни одной области не выбрано — инструментом «Перемешать» отметь клетки.", 13f, 0xFFFFB13B.toInt()))
 		}
 		if (v.setup) {
-			rc.addView(ui.sub("Перед партией игроки по очереди ставят фигуры, лежащие на доске, в свои зоны (инструмент «Зона расстановки»). Fairy-Stockfish, нейросеть и игра по сети в таком варианте не работают."))
+			rc.addView(ui.sub("Перед партией игроки по очереди ставят фигуры из набора ниже в свои зоны (инструмент «Зона расстановки»). Фигуры, уже стоящие на доске, остаются на местах. Расстановку за Fairy-Stockfish и ботов делает простой алгоритм по материалу, дальше они играют как обычно. Нейросеть и игра по сети в таком варианте не работают."))
+			val kc = ui.card()
+			kc.addView(ui.text("Набор для расстановки", 15f, bold = true))
 			for (c in 0 until v.players) {
-				val pool = v.cells.count { it != 0 && v.has(it) && (it shr 8) == c }
-				val room = v.zoneCells(c).size
-				if (pool > room) rc.addView(ui.text("Внимание: у ${colorGen[c]} ${pool} фигур, а в зоне только $room клеток — все не поместятся.", 13f, 0xFFFFB13B.toInt()))
-				else if (pool == 0) rc.addView(ui.text("Внимание: у ${colorGen[c]} на доске нет фигур для расстановки.", 13f, 0xFFFFB13B.toInt()))
+				kc.addView(ui.sub(colorNames[c] + ": " + (if (v.kit[c].isEmpty()) "набор пуст" else v.kit[c].groupingBy { it }.eachCount().entries.sortedBy { it.key }.joinToString(", ") { (k, n) -> "${v.pieces[k].symbol}×$n" })))
+				kc.addView(ui.chips(v.pieces.mapIndexed { k, d -> "${d.symbol} ${v.kit[c].count { it == k }}" to false }, 3) { k -> v.kit[c].add(k); save(); a.refresh() })
+				kc.addView(ui.chips(listOf("Убрать последнюю" to false, "Очистить набор" to false), 2) { if (it == 0) { if (v.kit[c].isNotEmpty()) v.kit[c].removeAt(v.kit[c].size - 1) } else v.kit[c].clear(); save(); a.refresh() })
+				val room = v.zoneCells(c).count { v.cells[it] == 0 }
+				if (v.kit[c].size > room) kc.addView(ui.text("Внимание: фигур ${v.kit[c].size}, а свободных клеток в зоне ${colorGen[c]} только $room — все не поместятся.", 13f, 0xFFFFB13B.toInt()))
+				else if (v.kit[c].isEmpty()) kc.addView(ui.text("Внимание: у ${colorGen[c]} нет фигур для расстановки.", 13f, 0xFFFFB13B.toInt()))
 			}
+			kc.addView(ui.sub("Нажатие на фигуру добавляет её в набор, число рядом — сколько уже в наборе."))
+			rc.addView(kc)
 		}
-		if (v.shuffle && v.players == 2) rc.addView(ui.sub("Перед каждой партией фигуры первой линии встают случайно, у чёрных — зеркально. Одинаковые фигуры, ходящие только по своему цвету (как слоны), — на клетки разного цвета, король — между двумя рокирующимися фигурами. Рокировка — по правилам конструктора: король идёт на две клетки к ладье."))
 		rc.addView(ui.space(6))
 		if (v.win != Variant.WIN_PROMO) {
 			rc.addView(ui.sub("Пешки превращаются на клетках превращения (по умолчанию — последняя горизонталь; свои клетки — инструменты «Превращение» над доской) в:"))
@@ -736,7 +754,8 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, white: Strin
 	private val placing0 = base.setup
 	private val pool = Array(4) { mutableListOf<Int>() } // набор фигур каждого цвета при расстановке
 	private var v: Variant = if (placing0) base.copy().also { d ->
-		for (i in d.cells.indices) { val c = d.cells[i]; if (c != 0 && d.has(c) && (c shr 8) < d.players) pool[c shr 8].add(c); d.cells[i] = 0 }
+		// набор для расстановки берётся из отдельного списка варианта, а не с доски; фигуры на доске уже стоят
+		for (c in 0 until d.players) for (k in d.kit[c]) if (k in d.pieces.indices) pool[c].add(Variant.code(k, c))
 		d.setup = false
 		for (list in d.shuf) list.clear()
 		for (list in pool) list.sortByDescending { c -> d.piece(c).value }
@@ -752,11 +771,17 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, white: Strin
 			ru.cersat.chessics.data.Eggs.find(a.store, "statue")?.let { msg -> BotRunner.main.post { a.toast(msg) } }
 		v.dealtWarning?.let { w -> BotRunner.main.post { a.toast("Внимание: $w") } }
 	}
-	private val fairyPlan = if (seats.any { it.startsWith("F") }) FairyVariant.plan(v).plan else null
-	private val bots: List<VBot?> = seats.map { s ->
-		if (s.startsWith("F")) fairyPlan?.let { FairyVBot(a, s.drop(1).toIntOrNull() ?: 0, it) { msg -> BotRunner.main.post { a.toast(msg) } } } ?: VMaterial(3)
-		else VBots.bot(s)
+	// Fairy нужна готовая расстановка: при расстановке перед партией план строится после неё
+	private var fairyPlan: FairyVariant.Plan? = null
+	private var bots: List<VBot?> = emptyList()
+	private fun makeBots() {
+		fairyPlan = if (seats.any { it.startsWith("F") }) FairyVariant.plan(v).plan else null
+		bots = seats.map { s ->
+			if (s.startsWith("F")) fairyPlan?.let { pl -> FairyVBot(a, s.drop(1).toIntOrNull() ?: 0, pl) { msg -> BotRunner.main.post { a.toast(msg) } } } ?: VMaterial(3)
+			else VBots.bot(s)
+		}
 	}
+	init { if (!placing0) makeBots() }
 	private var linkLost = false
 	private val remoteColor = seats.indexOf("L")
 	private val neuralBox by lazy { ui.col(0, 0) }
@@ -954,6 +979,7 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, white: Strin
 		board.v = v
 		board.onPlace = null; board.placeCells = emptySet()
 		token++
+		makeBots()
 		val r = pos.result()
 		if (r >= 0) { redraw(); finish(r, reasonFor(r)); return }
 		redraw()
@@ -1014,10 +1040,20 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, white: Strin
 		thinking = true
 		redraw()
 		val my = ++token
-		val p = pos.copy()
+		val real = pos.copy()
+		val me = pos.turn
 		BotRunner.exec.execute {
 			val t0 = System.currentTimeMillis()
-			val m = try { bot.pick(p) { token != my } } catch (_: Exception) { p.legal().randomOrNull() ?: 0 }
+			// бот не видит, какая именно из одинаково выглядящих вражеских фигур перед ним: перебирает варианты вслепую
+			var m = 0
+			for (attempt in 0 until 3) {
+				val p = real.copy()
+				VBots.blur(p, me)
+				m = try { bot.pick(p) { token != my } } catch (_: Exception) { 0 }
+				if (m != 0 && m in real.legal()) break
+				m = 0
+			}
+			if (m == 0) m = try { VMaterial(1).pick(real.copy()) { token != my } } catch (_: Exception) { real.legal().randomOrNull() ?: 0 }
 			val wait = maxOf(0L, 300 - (System.currentTimeMillis() - t0))
 			BotRunner.main.postDelayed({
 				if (token != my) return@postDelayed

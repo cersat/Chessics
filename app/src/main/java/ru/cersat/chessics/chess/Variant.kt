@@ -98,6 +98,8 @@ class Variant(
 	var zone: Array<BooleanArray> = Array(4) { BooleanArray(w * h) } // зоны расстановки каждого цвета
 	var shuf: Array<MutableList<Int>> = Array(4) { mutableListOf<Int>() } // клетки перемешивания каждого цвета в порядке выбора
 	var dealtWarning: String? = null
+	// набор для расстановки: номера фигур (с повторами), которые каждый цвет ставит в свои зоны; лежащие на доске фигуры стоят сразу
+	var kit: Array<MutableList<Int>> = Array(4) { mutableListOf<Int>() }
 
 	fun rot(c: Int) = if (players == 2) c * 2 else c
 	// локальные координаты игрока (как у белых снизу) → клетка доски, и обратно; для четверых доска квадратная
@@ -139,6 +141,7 @@ class Variant(
 		.put("promoC2", JSONArray().apply { promoZ[2].forEach { put(it) } })
 		.put("promoC3", JSONArray().apply { promoZ[3].forEach { put(it) } })
 		.put("players", players).put("setup", setup)
+		.put("kit", JSONArray().apply { for (c in 0..3) put(JSONArray(kit[c])) })
 		.put("zones", JSONArray().apply { for (c in 0..3) put(JSONArray().apply { zone[c].forEach { put(it) } }) })
 		.put("shuf", JSONArray().apply { for (c in 0..3) put(JSONArray(shuf[c])) })
 
@@ -161,8 +164,8 @@ class Variant(
 	// расстановка для очередной партии: при перемешивании — случайная первая линия.
 	// Одинаковые «одноцветные» фигуры (как слоны) встают на клетки разного цвета, король — между двумя рокирующимися фигурами.
 	fun dealt(rnd: java.util.Random = java.util.Random()): Variant {
-		val picked = (0 until players).any { shuf[it].size >= 2 }
-		val legacy = shuffle && players == 2
+		val picked = shuffle && (0 until players).any { shuf[it].size >= 2 }
+		val legacy = shuffle && players == 2 && !picked
 		if (!legacy && !picked) return this
 		val d = copy()
 		d.shuffle = false
@@ -250,7 +253,7 @@ class Variant(
 		if (n == 4) {
 			val m = maxOf(w, h)
 			if (w != h) resize(m, m)
-			players = 4; castling = false; enPassant = false; shuffle = false
+			players = 4; castling = false; enPassant = false
 		} else {
 			players = 2
 			for (i in cells.indices) if (cells[i] != 0 && (cells[i] shr 8) >= 2) cells[i] = 0
@@ -273,6 +276,7 @@ class Variant(
 			when { c == 0 -> 0; (c and 0xFF) - 1 == i -> 0; (c and 0xFF) - 1 > i -> c - 1; else -> c }
 		}
 		promo.remove(name)
+		for (k in 0..3) kit[k] = kit[k].filter { it != i }.map { if (it > i) it - 1 else it }.toMutableList()
 	}
 
 	companion object {
@@ -305,6 +309,7 @@ class Variant(
 				o.optJSONArray(key)?.let { a -> if (a.length() == w * h) v.promoZ[k] = BooleanArray(w * h) { a.optBoolean(it) } }
 			v.players = if (o.optInt("players", 2) == 4 && w == h) 4 else 2
 			v.setup = o.optBoolean("setup", false)
+			o.optJSONArray("kit")?.let { ka -> for (k in 0 until minOf(4, ka.length())) ka.optJSONArray(k)?.let { a -> v.kit[k] = MutableList(a.length()) { a.optInt(it) }.toMutableList() } }
 			o.optJSONArray("zones")?.let { za -> for (k in 0 until minOf(4, za.length())) za.optJSONArray(k)?.let { a -> if (a.length() == w * h) v.zone[k] = BooleanArray(w * h) { a.optBoolean(it) } } }
 			o.optJSONArray("shuf")?.let { sa -> for (k in 0 until minOf(4, sa.length())) sa.optJSONArray(k)?.let { a -> v.shuf[k] = MutableList(a.length()) { a.optInt(it) }.filter { it in 0 until w * h }.toMutableList() } }
 			o.optJSONArray("promo")?.let { a -> for (i in 0 until a.length()) v.promo.add(a.getString(i)) }
@@ -347,6 +352,8 @@ class Variant(
 		fun setupChess(): Variant {
 			val v = classic()
 			v.name = "Расстановка"; v.setup = true
+			v.cells.fill(0)
+			for (c in 0..1) { v.kit[c].addAll(List(8) { 0 }); v.kit[c].addAll(listOf(1, 1, 2, 2, 3, 3, 4, 5)) }
 			return v
 		}
 
@@ -825,6 +832,26 @@ class VAlgorithm(private val level: Int) : VBot {
 }
 
 object VBots {
+	private fun icon(d: PieceDef) = if (d.art in 1..6) "a${d.art}" else "s${d.symbol}"
+
+	// Бот видит доску так же, как человек: вражеские фигуры с одинаковой иконкой он не различает, поэтому
+	// перемешивает их между собой (число фигур каждого вида сохраняется) и считает на случайном допущении. Свои фигуры не трогает.
+	fun blur(p: VPos, me: Int) {
+		val groups = HashMap<String, MutableList<Int>>()
+		for (s in 0 until p.n) {
+			val c = p.sq[s]
+			if (c == 0 || !p.v.has(c) || p.team(p.color(c)) == p.team(me)) continue
+			groups.getOrPut(icon(p.v.piece(c)) + "/" + p.color(c)) { mutableListOf() }.add(s)
+		}
+		for (sqs in groups.values) {
+			if (sqs.size < 2) continue
+			val codes = sqs.map { p.sq[it] }
+			if (codes.distinct().size < 2) continue
+			val mixed = codes.shuffled()
+			sqs.forEachIndexed { i, s -> p.sq[s] = mixed[i] }
+		}
+	}
+
 	// "H" человек, "R" случайный, "M3" материал 3, "A2" алгоритм 2
 	val OPTIONS = listOf("H", "N", "R", "M1", "M2", "M3", "M4", "A1", "A2", "A3", "A4", "A5")
 	// Fairy-Stockfish: Эло, 0 — полная сила

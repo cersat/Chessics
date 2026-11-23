@@ -350,7 +350,7 @@ data class Player(val kind: Kind, val level: Int = 0) {
 		Kind.RANDOM -> 200
 		Kind.ALGO -> intArrayOf(400, 600, 800, 950, 1100)[(level - 1).coerceIn(0, 4)]
 		Kind.MATERIAL -> intArrayOf(500, 700, 900, 1050, 1200, 1300, 1400, 1450)[(level - 1).coerceIn(0, 7)]
-		Kind.STOCKFISH -> if (level <= 0) 3500 else level
+		Kind.STOCKFISH -> if (level <= 0) 2900 else level
 		Kind.REMOTE -> 0
 		Kind.NEURAL -> 0
 	}
