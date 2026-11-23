@@ -239,7 +239,7 @@ class SetupScreen(a: MainActivity, private val mode: Mode, private val widgetId:
 	private var white = Player.decode(st.str("setupW", "HUMAN:0"))
 	private var black = Player.decode(st.str("setupB", "MATERIAL:3"))
 	private var variant = st.str("setupVariant", "0").toInt()
-	private val customs = if (widgetId >= 0) emptyList() else VariantStore.list(st)
+	private val customs = if (widgetId >= 0) emptyList() else VariantStore.list(st).filter { it.players == 2 }
 	private var custom = st.str("setupCustom", "-1").toInt().takeIf { it in customs.indices } ?: -1
 
 	override fun build(): View {
@@ -331,7 +331,7 @@ class SetupScreen(a: MainActivity, private val mode: Mode, private val widgetId:
 			}
 			Player.Kind.ALGO -> {
 				box.addView(ui.chips((1..5).map { AlgoBot.LABELS[it - 1] to (it == cur.level) }, 3) { onChange(Player(Player.Kind.ALGO, it + 1)) })
-				box.addView(ui.sub("Не перебор, а правила: видит мат в 1, не вешает фигуры (SEE), ищет вилки; с «Сильного» смотрит ответ соперника и не пропускает мат в 1; в эндшпиле двигает проходные. ≈${cur.elo} Эло (оценка на глаз)."))
+				box.addView(ui.sub("Не перебор, а правила: видит мат в 1, не вешает фигуры (SEE), ищет вилки; с «Сильного» смотрит ответ соперника и не пропускает мат в 1; в эндшпиле двигает проходные; с «Крепкого» — центр и развитие в дебюте, ладьи на открытые линии, король идёт к центру в эндшпиле. ≈${cur.elo} Эло (оценка на глаз)."))
 			}
 			Player.Kind.RANDOM -> box.addView(ui.sub("Ходит случайно. Для разминки и проверки матов."))
 			Player.Kind.NEURAL -> box.addView(ui.sub("Любой чат-бот — ChatGPT, Claude, Gemini… В его ход приложение даёт промпт с доской и списком легальных ходов: копируешь, отправляешь нейросети, вставляешь ответ. Наград и рейтинга за такие партии нет."))

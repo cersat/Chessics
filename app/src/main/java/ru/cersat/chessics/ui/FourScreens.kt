@@ -31,16 +31,18 @@ object Seats {
 		s == "H" -> "Человек"
 		s == "R" -> "Случайный"
 		s.startsWith("M") -> "Материал ${s.drop(1)}"
+		s.startsWith("A") -> "Алгоритм ${s.drop(1)}"
 		else -> s
 	}
 
 	fun bot(s: String): Bot4? = when {
 		s == "R" -> Random4
 		s.startsWith("M") -> Material4Bot(s.drop(1).toIntOrNull() ?: 2)
+		s.startsWith("A") -> ru.cersat.chessics.bots.Algo4Bot(s.drop(1).toIntOrNull() ?: 3)
 		else -> null
 	}
 
-	val OPTIONS = listOf("H", "M1", "M2", "M3", "M4", "R")
+	val OPTIONS = listOf("H", "M1", "M2", "M3", "M4", "A1", "A2", "A3", "A4", "A5", "R")
 	val COLORS = intArrayOf(0xFFD9453B.toInt(), 0xFF3D7BD9.toInt(), 0xFFE0B42A.toInt(), 0xFF3FA65A.toInt())
 }
 
@@ -183,6 +185,7 @@ class FourSetupScreen(a: MainActivity, private val widgetId: Int = -1) : Screen(
 			c.addView(ui.chips(Seats.OPTIONS.map { Seats.title(it) to (it == seat(i)) }, 3) { st.setStr("four_seat_$i", Seats.OPTIONS[it]); a.refresh() })
 			box.addView(c)
 		}
+		box.addView(ui.sub("Материал — перебор по материалу, Алгоритм — набор правил без перебора (цифра — сила): не ставит фигуры под бой, бьёт висящее, ставит мат и шахи, развивается к центру."))
 		box.addView(ui.sub("Победы засчитываются (и идут в «Радугу»), когда люди играют за одну команду, а в другой есть хотя бы один бот."))
 		val seats = (0..3).map { seat(it) }
 		if (widgetId >= 0) box.addView(ui.button("📌 Поставить в виджет") {

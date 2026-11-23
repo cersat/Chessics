@@ -56,6 +56,9 @@ object FairyVariant {
 	}
 
 	fun plan(v: Variant): Result {
+		if (v.players == 4) return Result(null, "четверо игроков — Fairy-Stockfish такое не умеет")
+		if (v.setup) return Result(null, "расстановка фигур перед партией")
+		if (v.pieces.any { it.royal && it.castleAxis == 1 && v.castling }) return Result(null, "рокировка по вертикали")
 		if (v.w > MAX_W || v.h > MAX_H) return Result(null, "доска больше ${MAX_W}×${MAX_H}")
 		val allPieces = v.win == Variant.WIN_ALL
 		val royals = if (allPieces) emptyList() else v.pieces.indices.filter { v.pieces[it].royal }

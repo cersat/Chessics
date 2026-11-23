@@ -254,7 +254,8 @@ class HistoryScreen(a: MainActivity) : Screen(a) {
 			r.addView(info, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 			r.addView(ui.button("🗑", false) { a.store.deleteGame(i); a.refresh() })
 			ui.clickable(r, ui.t.card, 16f) {
-				val res = when (o.optString("res")) { "1-0" -> "Победа белых"; "0-1" -> "Победа чёрных"; "1/2-1/2" -> "Ничья"; else -> "" }
+				val four = custom?.optInt("players", 2) == 4
+				val res = when (o.optString("res")) { "1-0" -> if (four) "Победа красных и жёлтых" else "Победа белых"; "0-1" -> if (four) "Победа синих и зелёных" else "Победа чёрных"; "1/2-1/2" -> "Ничья"; else -> "" }
 				if (custom != null) {
 					val arr = o.optJSONArray("vmoves") ?: org.json.JSONArray()
 					val mv = List(arr.length()) { k -> arr.getJSONArray(k).let { intArrayOf(it.getInt(0), it.getInt(1), it.getInt(2)) } }
@@ -294,6 +295,8 @@ class SettingsScreen(a: MainActivity) : Screen(a) {
 		})
 		val about = ui.card()
 		about.addView(ui.text("О приложении", 16f, bold = true))
+		val info = try { a.packageManager.getPackageInfo(a.packageName, 0) } catch (_: Exception) { null }
+		about.addView(ui.text("Версия ${info?.versionName ?: "неизвестна"}" + (info?.let { " (сборка ${if (android.os.Build.VERSION.SDK_INT >= 28) it.longVersionCode else @Suppress("DEPRECATION") it.versionCode.toLong()})" } ?: ""), 14f, ui.t.text, true))
 		about.addView(ui.sub("Chessics. Движок Stockfish 17.1 (GPLv3, stockfishchess.org) работает прямо на телефоне. " +
 			"Боты «Материал» и «Алгоритм» перенесены из chess-bots.js. Фигуры — из lichess: " +
 			Shop.items(Shop.Cat.PIECES).joinToString("; ") { (it as Shop.Pieces).credit } + ". Задачи — из открытой базы lichess (CC0), генератор в приложении проверяет свои задачи Stockfish. Ходы оценивает Stockfish: !! бриллиантовый (жертва, после которой позиция не хуже), ! отличный (единственный сильный), ★ лучший, 👍 очень хороший, ✓ хороший, □ единственный, ?! неточность, ? ошибка, ?? зевок.", 12f))

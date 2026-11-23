@@ -56,7 +56,7 @@ class LanScreen(a: MainActivity, private val auto: JSONObject? = null) : Screen(
 		host.addView(ui.space(8))
 		host.addView(ui.chips(GameConfig.CLOCKS.mapIndexed { i, (m, inc) -> GameConfig.clockLabel(m, inc) to (i == clock) }, 4) { st.setStr("lanClock", "$it"); a.refresh() })
 		host.addView(ui.space(8))
-		val customs = VariantStore.list(st)
+		val customs = VariantStore.list(st).filter { it.players == 2 && !it.setup }
 		val custom = st.str("lanCustom", "-1").toInt().takeIf { it in customs.indices } ?: -1
 		host.addView(ui.chips(V.NAMES.mapIndexed { i, n -> n to (custom < 0 && i == variant) }, 4) { st.setStr("lanVariant", "$it"); st.setStr("lanCustom", "-1"); a.refresh() })
 		if (customs.isNotEmpty()) {

@@ -20,6 +20,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import ru.cersat.chessics.bots.MoveClass
 import ru.cersat.chessics.bots.Stockfish
+import ru.cersat.chessics.chess.F4
 import ru.cersat.chessics.chess.FairyVariant
 import ru.cersat.chessics.chess.MoveRule
 import ru.cersat.chessics.chess.VBot
@@ -52,15 +53,16 @@ object VariantStore {
 	}
 }
 
-// Рисование фигур конструктора: стандартные — картинками текущего набора, свои — буквой в кружке
+// Рисование фигур конструктора: стандартные — картинками текущего набора, свои — буквой в кружке.
+// На четверых — картинки четырёх цветов, а свои фигуры красятся в цвет игрока.
 object VArt {
 	private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
 	private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; isFakeBoldText = true }
 	private val dst = RectF()
 
-	fun draw(ctx: Context, c: Canvas, d: PieceDef, color: Int, l: Float, t: Float, s: Float) {
+	fun draw(ctx: Context, c: Canvas, d: PieceDef, color: Int, l: Float, t: Float, s: Float, four: Boolean = false) {
 		if (d.art in 1..6) {
-			val b = PieceArt.get(ctx, Shop.pieces(ctx).set, P.make(color, d.art))
+			val b = if (four) Four4Art.get(ctx, F4.make(color, d.art)) else PieceArt.get(ctx, Shop.pieces(ctx).set, P.make(color, d.art))
 			if (b != null) {
 				dst.set(l, t, l + s, t + s)
 				c.drawBitmap(b, null, dst, fill)
@@ -68,8 +70,8 @@ object VArt {
 			}
 		}
 		val cx = l + s / 2; val cy = t + s / 2
-		val bodyColor = if (color == 0) 0xFFF4F1E8.toInt() else 0xFF26282E.toInt()
-		val inkColor = if (color == 0) 0xFF1B1C20.toInt() else 0xFFF4F1E8.toInt()
+		val bodyColor = if (four) Seats.COLORS[color] else if (color == 0) 0xFFF4F1E8.toInt() else 0xFF26282E.toInt()
+		val inkColor = if (four) 0xFFFFFFFF.toInt() else if (color == 0) 0xFF1B1C20.toInt() else 0xFFF4F1E8.toInt()
 		fill.style = Paint.Style.FILL; fill.color = bodyColor
 		c.drawCircle(cx, cy, s * 0.4f, fill)
 		fill.style = Paint.Style.STROKE; fill.strokeWidth = s * 0.06f; fill.color = inkColor
@@ -82,25 +84,33 @@ object VArt {
 	}
 }
 
-// Доска варианта: и для редактора (нажатие по клетке), и для партии (выбор и ход)
+// Доска варианта: и для редактора (рисование по клеткам), и для партии (выбор и ход)
 class VBoardView(ctx: Context) : View(ctx) {
 	var v: Variant = Variant.classic()
 	var sq: IntArray = v.cells
-	var flipped = false
+	var flipped = false // на двоих — доска вверх ногами
+	var seatDown = 0 // на четверых — чья сторона внизу
 	var lastMove = 0
 	var check = -1
 	var legal: List<Int> = emptyList()
-	var onCell: ((Int) -> Unit)? = null // режим редактора
+	// режим редактора: клетка и «первое ли это касание штриха»; штрих можно вести пальцем, рисуя по многим клеткам
+	var onCell: ((Int, Boolean) -> Unit)? = null
+	var onStrokeEnd: () -> Unit = {}
+	var inert = false // доска не реагирует на касания — страница прокручивается за неё
 	var canMove: () -> Boolean = { false }
 	var onMove: (List<Int>) -> Unit = {}
+	var onPlace: ((Int) -> Unit)? = null // расстановка перед партией: касание свободной клетки
+	var placeCells: Set<Int> = emptySet() // куда сейчас можно поставить
 	private var selected = -1
+	private var strokeCell = -1
 	private val p = Paint(Paint.ANTI_ALIAS_FLAG)
 	private val coord = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFakeBoldText = true }
 	private val board = Shop.board(ctx)
 	// значок типа хода, стрелка лучшего хода и вспышка — как в обычном разборе
 	val fx = MoveFx(this, { i -> col(i) * cell to row(i) * cell }, { cell })
 	var hint = 0
-	var showPromo = -1 // цвет, чьи клетки превращения показать уголками (редактор)
+	var mark = "" // редактор: "promo", "zone" или "shuf" — показать клетки цвета markColor
+	var markColor = 0
 
 	fun clearSel() { selected = -1; invalidate() }
 
@@ -110,11 +120,25 @@ class VBoardView(ctx: Context) : View(ctx) {
 	}
 
 	private val cell get() = width.toFloat() / v.w
+	private val four get() = v.players == 4
 
-	private fun col(s: Int) = if (flipped) v.w - 1 - s % v.w else s % v.w
-	private fun row(s: Int) = if (flipped) s / v.w else v.h - 1 - s / v.w
+	private fun col(s: Int) = if (four) v.toLx(seatDown, s) else if (flipped) v.w - 1 - s % v.w else s % v.w
+	private fun row(s: Int) = if (four) v.h - 1 - v.toLy(seatDown, s) else if (flipped) s / v.w else v.h - 1 - s / v.w
+	private fun at(cx: Int, cy: Int): Int =
+		if (four) v.toG(seatDown, cx, v.h - 1 - cy) else v.idx(if (flipped) v.w - 1 - cx else cx, if (flipped) cy else v.h - 1 - cy)
+
+	private fun tri(x: Float, y: Float, s: Float, fillC: Int, edge: Int) {
+		val path = android.graphics.Path(); path.moveTo(x, y); path.lineTo(x + s * 0.42f, y); path.lineTo(x, y + s * 0.42f); path.close()
+		p.style = Paint.Style.FILL; p.color = fillC; c0.drawPath(path, p)
+		p.style = Paint.Style.STROKE; p.strokeWidth = s * 0.04f; p.color = edge; c0.drawPath(path, p)
+		p.style = Paint.Style.FILL
+	}
+	private lateinit var c0: Canvas
+
+	private fun colorOf(c: Int) = if (four) Seats.COLORS[c] else if (c == 0) 0xFFF4F1E8.toInt() else 0xFF26282E.toInt()
 
 	override fun onDraw(c: Canvas) {
+		c0 = c
 		val s = cell
 		for (i in 0 until v.w * v.h) {
 			val x = col(i) * s; val y = row(i) * s
@@ -132,17 +156,26 @@ class VBoardView(ctx: Context) : View(ctx) {
 			if (i == selected) { p.color = board.select; c.drawRect(x, y, x + s, y + s, p) }
 			if (i == check) { p.color = 0x88FF2020.toInt(); c.drawCircle(x + s / 2, y + s / 2, s * 0.5f, p) }
 		}
-		// клетки превращения: уголок цвета пешек
-		if (showPromo >= 0) {
-			p.color = if (showPromo == 0) 0xFFF4F1E8.toInt() else 0xFF26282E.toInt()
-			val edge = if (showPromo == 0) 0xFF26282E.toInt() else 0xFFF4F1E8.toInt()
-			for (i in v.promoCells(showPromo)) {
-				val x = col(i) * s; val y = row(i) * s
-				val tri = android.graphics.Path(); tri.moveTo(x, y); tri.lineTo(x + s * 0.42f, y); tri.lineTo(x, y + s * 0.42f); tri.close()
-				p.style = Paint.Style.FILL; p.color = if (showPromo == 0) 0xFFF4F1E8.toInt() else 0xFF26282E.toInt(); c.drawPath(tri, p)
-				p.style = Paint.Style.STROKE; p.strokeWidth = s * 0.04f; p.color = edge; c.drawPath(tri, p)
-				p.style = Paint.Style.FILL
+		// редактор: клетки превращения (уголок цвета пешек), зона расстановки (цветная заливка), перемешивание (номера)
+		if (mark == "promo") {
+			val edge = if (four) 0xFFFFFFFF.toInt() else if (markColor == 0) 0xFF26282E.toInt() else 0xFFF4F1E8.toInt()
+			for (i in v.promoCells(markColor)) tri(col(i) * s, row(i) * s, s, colorOf(markColor), edge)
+		} else if (mark == "zone") {
+			for (i in v.zoneCells(markColor)) { p.color = (colorOf(markColor) and 0x00FFFFFF) or 0x66000000; c.drawRect(col(i) * s, row(i) * s, col(i) * s + s, row(i) * s + s, p) }
+		} else if (mark == "shuf") {
+			coord.textSize = s * 0.3f
+			v.shuf[markColor].forEachIndexed { k, i ->
+				val cx = col(i) * s + s * 0.78f; val cy = row(i) * s + s * 0.28f
+				p.style = Paint.Style.FILL; p.color = 0xFFFFC23D.toInt(); c.drawCircle(cx, cy, s * 0.2f, p)
+				coord.style = Paint.Style.FILL; coord.color = 0xFF1B1C20.toInt(); coord.textAlign = Paint.Align.CENTER
+				c.drawText("${k + 1}", cx, cy - (coord.descent() + coord.ascent()) / 2, coord)
+				coord.textAlign = Paint.Align.LEFT
 			}
+		}
+		// расстановка перед партией: куда можно ставить
+		if (placeCells.isNotEmpty()) {
+			p.color = 0x5547C46A
+			for (i in placeCells) if (sq[i] == 0) c.drawRect(col(i) * s, row(i) * s, col(i) * s + s, row(i) * s + s, p)
 		}
 		// холм: золотая рамка по клеткам
 		if (v.win == Variant.WIN_HILL) {
@@ -154,7 +187,7 @@ class VBoardView(ctx: Context) : View(ctx) {
 		for (i in sq.indices) {
 			val code = sq[i]
 			if (code == 0 || !v.has(code)) continue
-			VArt.draw(context, c, v.piece(code), code shr 8, col(i) * s, row(i) * s, s)
+			VArt.draw(context, c, v.piece(code), code shr 8, col(i) * s, row(i) * s, s, four)
 		}
 		fx.drawOver(c, if (hint != 0) VM.from(hint) else -1, if (hint != 0) VM.to(hint) else -1)
 		if (selected >= 0) {
@@ -164,7 +197,8 @@ class VBoardView(ctx: Context) : View(ctx) {
 				c.drawCircle(col(t) * s + s / 2, row(t) * s + s / 2, s * (if (sq[t] != 0) 0.42f else 0.16f), p)
 			}
 		}
-		// координаты: буквы снизу, цифры слева, с обводкой — читаются на любой клетке
+		// координаты: буквы снизу, цифры слева, с обводкой — читаются на любой клетке (на четверых доска вращается — без подписей)
+		if (four) return
 		coord.textSize = s * 0.22f
 		for (x in 0 until v.w) {
 			val i = if (flipped) v.idx(x, v.h - 1) else v.idx(x, 0)
@@ -183,14 +217,29 @@ class VBoardView(ctx: Context) : View(ctx) {
 		c.drawText(t, x, y, coord)
 	}
 
-	override fun onTouchEvent(e: MotionEvent): Boolean {
-		if (e.actionMasked != MotionEvent.ACTION_DOWN) return true
+	private fun cellAt(e: MotionEvent): Int {
 		val cx = (e.x / cell).toInt(); val cy = (e.y / cell).toInt()
-		if (cx !in 0 until v.w || cy !in 0 until v.h) return true
-		val x = if (flipped) v.w - 1 - cx else cx
-		val y = if (flipped) cy else v.h - 1 - cy
-		val i = v.idx(x, y)
-		onCell?.let { it(i); return true }
+		if (cx !in 0 until v.w || cy !in 0 until v.h) return -1
+		return at(cx, cy)
+	}
+
+	override fun onTouchEvent(e: MotionEvent): Boolean {
+		if (inert) return false
+		val edit = onCell
+		if (edit != null) {
+			// рисование: страница не прокручивается, пока палец на доске
+			parent?.requestDisallowInterceptTouchEvent(true)
+			when (e.actionMasked) {
+				MotionEvent.ACTION_DOWN -> { val i = cellAt(e); strokeCell = i; if (i >= 0) edit(i, true) }
+				MotionEvent.ACTION_MOVE -> { val i = cellAt(e); if (i >= 0 && i != strokeCell) { strokeCell = i; edit(i, false) } }
+				MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { strokeCell = -1; onStrokeEnd() }
+			}
+			return true
+		}
+		if (e.actionMasked != MotionEvent.ACTION_DOWN) return true
+		val i = cellAt(e)
+		if (i < 0) return true
+		onPlace?.let { it(i); return true }
 		if (!canMove()) return true
 		if (selected >= 0) {
 			val ms = legal.filter { VM.from(it) == selected && VM.to(it) == i }
@@ -292,7 +341,7 @@ class VariantListScreen(a: MainActivity) : Screen(a) {
 	override fun build(): View {
 		val box = ui.col(16, 12)
 		box.addView(ui.title("Конструктор вариантов"))
-		box.addView(ui.sub("Своя доска до 12×12, заблокированные клетки, свои фигуры с любыми ходами и правила победы. Играть можно против ботов или вдвоём."))
+		box.addView(ui.sub("Своя доска до 16×16, заблокированные клетки, свои фигуры с любыми ходами, правила победы, игра вчетвером и расстановка фигур перед партией. Играть можно против ботов или вдвоём."))
 		box.addView(ui.row(8,
 			ui.button("＋ Новый") { newVariant() },
 			ui.button("📋 Вставить", false) { import() }).apply { (0 until childCount).forEach { getChildAt(it).layoutParams = ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) } })
@@ -301,7 +350,7 @@ class VariantListScreen(a: MainActivity) : Screen(a) {
 		all.forEachIndexed { i, v ->
 			val c = ui.card()
 			c.addView(ui.text(v.name, 17f, bold = true))
-			c.addView(ui.sub("${v.w}×${v.h} · ${winText(v)} · фигур: ${v.pieces.size}"))
+			c.addView(ui.sub("${v.w}×${v.h} · ${winText(v)} · фигур: ${v.pieces.size}" + (if (v.players == 4) " · на четверых" else "") + (if (v.setup) " · с расстановкой" else "")))
 			c.addView(ui.space(8))
 			val r1 = ui.row(8)
 			r1.addView(ui.button("▶ Играть") { a.push(VariantSetupScreen(a, i)) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -330,6 +379,8 @@ class VariantListScreen(a: MainActivity) : Screen(a) {
 		body.addView(ui.button("Три шаха", false) { start(Variant.threeCheck()) })
 		body.addView(ui.button("Царь горы", false) { start(Variant.koth()) })
 		body.addView(ui.button("Мини 6×6", false) { start(Variant.mini()) })
+		body.addView(ui.button("На четверых 14×14", false) { start(Variant.four()) })
+		body.addView(ui.button("Расстановка (ставим фигуры сами)", false) { start(Variant.setupChess()) })
 		body.addView(ui.button("С пустой доски 8×8", false) {
 			start(Variant("Мой вариант", 8, 8, PieceDef.standard(), IntArray(64), BooleanArray(64)).also { it.promo.addAll(listOf("Ферзь", "Ладья", "Слон", "Конь")) })
 		})
@@ -351,7 +402,7 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 	// перечитываем при каждой отрисовке: редактор фигуры сохраняет свои правки сам,
 	// и устаревшая копия здесь затёрла бы их при следующем сохранении
 	private var v: Variant = Variant.classic()
-	private var tool = "piece" // piece, erase, lock, hill, promoW, promoB
+	private var tool = "piece" // piece, erase, lock, hill, promo, zone, shuf, drag
 	private var color = 0
 	private var piece = 0
 
@@ -367,22 +418,45 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		// доска
 		val bc = ui.card()
 		bc.addView(ui.text("Доска", 17f, bold = true))
-		bc.addView(ui.stepper("Ширина", v.w, { d -> val nw = (v.w + d).coerceIn(Variant.MIN, Variant.MAX); if (nw != v.w) { v.resize(nw, v.h); save(); a.refresh() } }, 1))
-		bc.addView(ui.stepper("Высота", v.h, { d -> val nh = (v.h + d).coerceIn(Variant.MIN, Variant.MAX); if (nh != v.h) { v.resize(v.w, nh); save(); a.refresh() } }, 1))
+		bc.addView(ui.sub("Игроков"))
+		bc.addView(ui.chips(listOf("Двое" to (v.players == 2), "Четверо (команды 1+3 и 2+4)" to (v.players == 4)), 2) { v.switchPlayers(if (it == 0) 2 else 4); if (color >= v.players) color = 0; save(); a.refresh() })
+		if (v.players == 4) {
+			bc.addView(ui.sub("Доска квадратная; ходят по кругу, фигуры напарника брать нельзя. Углы закрой инструментом «Блок клетки». Рокировки и взятия на проходе здесь нет."))
+			bc.addView(ui.stepper("Сторона доски", v.w, { d -> val n = (v.w + d).coerceIn(Variant.MIN, Variant.MAX); if (n != v.w) { v.resize(n, n); save(); a.refresh() } }, 1))
+		} else {
+			bc.addView(ui.stepper("Ширина", v.w, { d -> val nw = (v.w + d).coerceIn(Variant.MIN, Variant.MAX); if (nw != v.w) { v.resize(nw, v.h); save(); a.refresh() } }, 1))
+			bc.addView(ui.stepper("Высота", v.h, { d -> val nh = (v.h + d).coerceIn(Variant.MIN, Variant.MAX); if (nh != v.h) { v.resize(v.w, nh); save(); a.refresh() } }, 1))
+		}
 		bc.addView(ui.space(6))
 		val hasPawns = v.pieces.any { it.pawn }
 		val tools = ArrayList<Pair<String, String>>()
 		tools.add("piece" to "Фигура"); tools.add("erase" to "Стереть"); tools.add("lock" to "Блок клетки")
 		if (v.win == Variant.WIN_HILL) tools.add("hill" to "Холм")
-		if (hasPawns) { tools.add("promoW" to "Превращение белых"); tools.add("promoB" to "Превращение чёрных") }
+		if (hasPawns) tools.add("promo" to "Превращение")
+		if (v.setup) tools.add("zone" to "Зона расстановки")
+		tools.add("shuf" to "Перемешать")
+		tools.add("drag" to "Прокрутка")
 		if (tools.none { it.first == tool }) tool = "piece"
 		bc.addView(ui.chips(tools.map { it.second to (it.first == tool) }, 3) { tool = tools[it].first; a.refresh() })
-		if (tool == "hill") bc.addView(ui.sub("Нажимай на клетки, чтобы добавить их к холму или убрать. Пока не выбрано ни одной, холм — центр доски."))
-		if (tool == "promoW" || tool == "promoB") bc.addView(ui.sub("Нажимай на клетки, где ${if (tool == "promoW") "белые" else "чёрные"} пешки превращаются (или выигрывают, если победа превращением). " +
-			"Отмечены уголком. Пока не выбрано ни одной, это последняя горизонталь — ${if (tool == "promoW") v.h else 1}-я."))
-		if (tool == "piece") {
+		val colorNames = if (v.players == 4) listOf("Красные", "Синие", "Жёлтые", "Зелёные") else listOf("Белые", "Чёрные")
+		val colorGen = if (v.players == 4) listOf("красные", "синие", "жёлтые", "зелёные") else listOf("белые", "чёрные")
+		if (color >= v.players) color = 0
+		bc.addView(ui.sub(when (tool) {
+			"piece" -> "Проведи пальцем по доске — фигуры встанут на все клетки, которых коснёшься. Начал с клетки, где уже стоит такая же, — сотрёшь."
+			"erase" -> "Проведи пальцем, чтобы стереть клетки: фигуры, блоки, холм, зоны."
+			"lock" -> "Проведи пальцем: заблокированные клетки (на них нельзя встать) ставятся или снимаются сразу по многим. Начал с занятой — снимаешь."
+			"hill" -> "Проведи по клеткам, чтобы добавить их к холму или убрать. Пока не выбрано ни одной, холм — центр доски."
+			"promo" -> "Проведи по клеткам, где ${colorGen[color]} пешки превращаются (или выигрывают, если победа превращением). Отмечены уголком. Пока не выбрано ни одной — " +
+				(if (v.players == 4) "средняя линия игрока." else "последняя горизонталь — ${if (color == 0) v.h else 1}-я.")
+			"zone" -> "Проведи по клеткам, куда ${colorGen[color]} могут ставить фигуры. Ставят те фигуры этого цвета, что лежат на доске (это их набор). Пока не выбрано ни одной — две ближние к игроку горизонтали."
+			"shuf" -> "Нажимай клетки в нужном порядке: перед каждой партией фигуры на выбранных клетках ${colorGen[color]} случайно меняются местами. Если рокировка из-за этого не получится, приложение предупредит перед партией."
+			else -> "Доска не реагирует на касания — страницу можно двигать, держа палец на доске."
+		}))
+		if (tool in listOf("piece", "promo", "zone", "shuf")) {
 			bc.addView(ui.space(6))
-			bc.addView(ui.chips(listOf("Белые" to (color == 0), "Чёрные" to (color == 1)), 2) { color = it; a.refresh() })
+			bc.addView(ui.chips(colorNames.mapIndexed { i, n -> n to (color == i) }, if (v.players == 4) 4 else 2) { color = it; a.refresh() })
+		}
+		if (tool == "piece") {
 			bc.addView(ui.space(6))
 			if (piece >= v.pieces.size) piece = 0
 			if (v.pieces.isNotEmpty()) bc.addView(ui.chips(v.pieces.mapIndexed { i, d -> "${d.symbol} ${d.name}" to (i == piece) }, 3) { piece = it; a.refresh() })
@@ -390,21 +464,40 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		bc.addView(ui.space(8))
 		val bv = VBoardView(a)
 		bv.v = v; bv.sq = v.cells
-		bv.showPromo = when (tool) { "promoW" -> 0; "promoB" -> 1; else -> -1 }
-		bv.onCell = { i ->
+		bv.mark = when (tool) { "promo", "zone", "shuf" -> tool; else -> "" }
+		bv.markColor = color
+		bv.inert = tool == "drag"
+		var stroke = false // что делает текущий штрих: ставит или стирает
+		bv.onCell = if (tool == "drag") null else { i, first ->
 			when (tool) {
-				"piece" -> if (v.pieces.isNotEmpty() && !v.locked[i]) { val c = Variant.code(piece, color); v.cells[i] = if (v.cells[i] == c) 0 else c }
-				"erase" -> { v.cells[i] = 0; v.locked[i] = false; v.hill[i] = false; v.promoWhite[i] = false; v.promoBlack[i] = false }
-				"lock" -> { v.locked[i] = !v.locked[i]; if (v.locked[i]) { v.cells[i] = 0; v.hill[i] = false; v.promoWhite[i] = false; v.promoBlack[i] = false } }
-				"hill" -> if (!v.locked[i]) v.hill[i] = !v.hill[i]
-				"promoW" -> if (!v.locked[i]) v.promoWhite[i] = !v.promoWhite[i]
-				"promoB" -> if (!v.locked[i]) v.promoBlack[i] = !v.promoBlack[i]
+				"piece" -> if (v.pieces.isNotEmpty() && !v.locked[i]) {
+					val c = Variant.code(piece, color)
+					if (first) stroke = v.cells[i] != c
+					v.cells[i] = if (stroke) c else 0
+				}
+				"erase" -> { v.cells[i] = 0; v.locked[i] = false; v.hill[i] = false; for (k in 0..3) { v.promoZ[k][i] = false; v.zone[k][i] = false; v.shuf[k].remove(i) } }
+				"lock" -> {
+					if (first) stroke = !v.locked[i]
+					v.locked[i] = stroke
+					if (stroke) { v.cells[i] = 0; v.hill[i] = false; for (k in 0..3) { v.promoZ[k][i] = false; v.zone[k][i] = false; v.shuf[k].remove(i) } }
+				}
+				"hill" -> if (!v.locked[i]) { if (first) stroke = !v.hill[i]; v.hill[i] = stroke }
+				"promo" -> if (!v.locked[i]) { if (first) stroke = !v.promoZ[color][i]; v.promoZ[color][i] = stroke }
+				"zone" -> if (!v.locked[i]) { if (first) stroke = !v.zone[color][i]; v.zone[color][i] = stroke }
+				"shuf" -> if (!v.locked[i]) {
+					if (first) stroke = i !in v.shuf[color]
+					if (stroke) { if (i !in v.shuf[color]) v.shuf[color].add(i) } else v.shuf[color].remove(i)
+				}
 			}
-			save(); bv.invalidate()
+			bv.invalidate()
 		}
+		bv.onStrokeEnd = { save() }
 		bc.addView(bv, ui.lp())
 		bc.addView(ui.space(8))
-		bc.addView(ui.button("Очистить доску", false) { v.cells.fill(0); v.locked.fill(false); save(); a.refresh() })
+		val clr = ui.row(8)
+		clr.addView(ui.button("Очистить доску", false) { v.cells.fill(0); v.locked.fill(false); save(); a.refresh() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		if (tool == "shuf") clr.addView(ui.button("Сбросить выбор", false) { v.shuf[color].clear(); save(); a.refresh() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		bc.addView(clr)
 		box.addView(bc)
 
 		// правила
@@ -422,11 +515,37 @@ class VariantEditorScreen(a: MainActivity, private val index: Int) : Screen(a) {
 		rc.addView(ui.sub("Пат"))
 		rc.addView(ui.chips(Variant.STALEMATE_NAMES.mapIndexed { i, n -> n to (i == v.stalemate) }, 3) { v.stalemate = it; save(); a.refresh() })
 		rc.addView(ui.space(6))
-		rc.addView(ui.chips(listOf("Рокировка" to v.castling, "Взятие на проходе" to v.enPassant, "Двойной ход пешки" to v.pawnDouble, "Перемешивать первую линию" to v.shuffle), 2) {
-			when (it) { 0 -> v.castling = !v.castling; 1 -> v.enPassant = !v.enPassant; 2 -> v.pawnDouble = !v.pawnDouble; else -> v.shuffle = !v.shuffle }
+		val flags = ArrayList<Pair<String, Boolean>>()
+		if (v.players == 2) { flags.add("Рокировка" to v.castling); flags.add("Взятие на проходе" to v.enPassant) }
+		flags.add("Двойной ход пешки" to v.pawnDouble)
+		if (v.players == 2) flags.add("Перемешивать первую линию" to v.shuffle)
+		flags.add("Расстановка перед партией" to v.setup)
+		rc.addView(ui.chips(flags, 2) {
+			when (flags[it].first) {
+				"Рокировка" -> v.castling = !v.castling
+				"Взятие на проходе" -> v.enPassant = !v.enPassant
+				"Двойной ход пешки" -> v.pawnDouble = !v.pawnDouble
+				"Перемешивать первую линию" -> v.shuffle = !v.shuffle
+				else -> v.setup = !v.setup
+			}
 			save(); a.refresh()
 		})
-		if (v.shuffle) rc.addView(ui.sub("Перед каждой партией фигуры первой линии встают случайно, у чёрных — зеркально. Одинаковые фигуры, ходящие только по своему цвету (как слоны), — на клетки разного цвета, король — между двумя рокирующимися фигурами. Рокировка — по правилам конструктора: король идёт на две клетки к ладье."))
+		if ((0 until v.players).any { v.shuf[it].size >= 2 }) {
+			rc.addView(ui.sub("Перемешивание клеток (инструмент «Перемешать»): перед каждой партией фигуры на выбранных клетках каждого цвета меняются местами."))
+			// если ни одна расстановка не оставляет рокировку возможной — предупреждаем сразу, а не перед партией
+			val warn = (1..20).firstNotNullOfOrNull { v.dealt().dealtWarning }
+			if (warn != null) rc.addView(ui.text("Внимание: $warn.", 13f, 0xFFFFB13B.toInt()))
+		}
+		if (v.setup) {
+			rc.addView(ui.sub("Перед партией игроки по очереди ставят фигуры, лежащие на доске, в свои зоны (инструмент «Зона расстановки»). Fairy-Stockfish, нейросеть и игра по сети в таком варианте не работают."))
+			for (c in 0 until v.players) {
+				val pool = v.cells.count { it != 0 && v.has(it) && (it shr 8) == c }
+				val room = v.zoneCells(c).size
+				if (pool > room) rc.addView(ui.text("Внимание: у ${colorGen[c]} ${pool} фигур, а в зоне только $room клеток — все не поместятся.", 13f, 0xFFFFB13B.toInt()))
+				else if (pool == 0) rc.addView(ui.text("Внимание: у ${colorGen[c]} на доске нет фигур для расстановки.", 13f, 0xFFFFB13B.toInt()))
+			}
+		}
+		if (v.shuffle && v.players == 2) rc.addView(ui.sub("Перед каждой партией фигуры первой линии встают случайно, у чёрных — зеркально. Одинаковые фигуры, ходящие только по своему цвету (как слоны), — на клетки разного цвета, король — между двумя рокирующимися фигурами. Рокировка — по правилам конструктора: король идёт на две клетки к ладье."))
 		rc.addView(ui.space(6))
 		if (v.win != Variant.WIN_PROMO) {
 			rc.addView(ui.sub("Пешки превращаются на клетках превращения (по умолчанию — последняя горизонталь; свои клетки — инструменты «Превращение» над доской) в:"))
@@ -506,7 +625,10 @@ class PieceEditorScreen(a: MainActivity, private val vi: Int, private val pi: In
 			val cc = ui.card()
 			cc.addView(ui.text("Рокировки", 17f, bold = true))
 			cc.addView(ui.sub("Король идёт к фигуре с флагом «Рокируется» минимум на 2 клетки (на 1 — это был бы обычный ход короля), она встаёт рядом с ним с другой стороны. Обе фигуры не должны были ходить, между ними пусто, а при шахе (если он есть в варианте) нельзя рокироваться из-под шаха и через битые клетки."))
-			cc.addView(ui.chips(listOf("Короткая (вправо, к h)" to d.castleShort, "Длинная (влево, к a)" to d.castleLong), 2) {
+			cc.addView(ui.sub("Направление рокировки"))
+			cc.addView(ui.chips(listOf("По горизонтали" to (d.castleAxis == 0), "По вертикали" to (d.castleAxis == 1)), 2) { d.castleAxis = it; save(); a.refresh() })
+			cc.addView(ui.sub(if (d.castleAxis == 0) "Король идёт вправо или влево по своей горизонтали." else "Король идёт вверх или вниз по своей вертикали, к фигуре с флагом «Рокируется» в том же столбце. Fairy-Stockfish так не умеет — в таком варианте он не играет."))
+			cc.addView(ui.chips(listOf((if (d.castleAxis == 0) "Короткая (вправо, к h)" else "Вверх") to d.castleShort, (if (d.castleAxis == 0) "Длинная (влево, к a)" else "Вниз") to d.castleLong), 2) {
 				if (it == 0) d.castleShort = !d.castleShort else d.castleLong = !d.castleLong
 				save(); a.refresh()
 			})
@@ -574,40 +696,62 @@ class FairyVBot(private val ctx: Context, private val elo: Int, private val plan
 
 class VariantSetupScreen(a: MainActivity, private val index: Int) : Screen(a) {
 	private val st = a.store
-	private fun seat(c: Int, fairyOk: Boolean) = st.str("var_seat_$c", if (c == 0) "H" else "M2").let { if (it.startsWith("F") && !fairyOk) "M2" else it }
+	private fun seat(c: Int, fairyOk: Boolean, noNeural: Boolean) = st.str("var_seat_$c", if (c == 0) "H" else "M2")
+		.let { if (it.startsWith("F") && !fairyOk) "M2" else it }.let { if (it == "N" && noNeural) "M2" else it }
 
 	override fun build(): View {
 		val v = VariantStore.list(st).getOrNull(index) ?: run { a.pop(); return View(a) }
 		val box = ui.col(16, 12)
 		box.addView(ui.row(10, ui.button("‹", false) { a.pop() }, ui.title(v.name)))
-		box.addView(ui.sub("${v.w}×${v.h} · ${winText(v)} · ${Variant.STALEMATE_NAMES[v.stalemate].lowercase()}"))
+		box.addView(ui.sub("${v.w}×${v.h} · ${winText(v)} · ${Variant.STALEMATE_NAMES[v.stalemate].lowercase()}" + if (v.players == 4) " · команды: красные + жёлтые против синих + зелёных" else ""))
 		val fairy = FairyVariant.plan(v)
-		val options = VBots.OPTIONS + if (fairy.plan != null) VBots.FAIRY else emptyList()
-		for (c in 0..1) {
+		val noNeural = v.players == 4 || v.setup
+		val options = VBots.OPTIONS.filter { !(noNeural && it == "N") } + if (fairy.plan != null) VBots.FAIRY else emptyList()
+		val names = if (v.players == 4) listOf("Красные", "Синие", "Жёлтые", "Зелёные") else listOf("Белые", "Чёрные")
+		for (c in 0 until v.players) {
 			val card = ui.card()
-			card.addView(ui.text(if (c == 0) "Белые" else "Чёрные", 17f, bold = true))
+			card.addView(ui.text(names[c], 17f, bold = true))
 			card.addView(ui.space(6))
-			card.addView(ui.chips(options.map { VBots.title(it) to (it == seat(c, fairy.plan != null)) }, 3) { st.setStr("var_seat_$c", options[it]); a.refresh() })
+			card.addView(ui.chips(options.map { VBots.title(it) to (it == seat(c, fairy.plan != null, noNeural)) }, 3) { st.setStr("var_seat_$c", options[it]); a.refresh() })
 			box.addView(card)
 		}
 		box.addView(ui.sub("Материал — перебор по материалу, Алгоритм — набор правил без перебора; цифра — сила. Fairy-Stockfish — сильный движок, цифра — его Эло."))
 		if (fairy.plan == null) box.addView(ui.text("Fairy-Stockfish в этом варианте не играет: ${fairy.reason}.", 13f, 0xFFFFB13B.toInt()))
-		box.addView(ui.button("Начать партию") { a.replace(VariantGameScreen(a, v, seat(0, fairy.plan != null), seat(1, fairy.plan != null))) })
+		if (noNeural) box.addView(ui.text("Нейросеть через промпт в этом варианте недоступна (${if (v.players == 4) "четверо игроков" else "расстановка перед партией"}).", 13f, 0xFFFFB13B.toInt()))
+		box.addView(ui.button("Начать партию") {
+			val seats = (0 until v.players).map { seat(it, fairy.plan != null, noNeural) }
+			a.replace(VariantGameScreen(a, v, seats[0], seats[1], extra = seats.drop(2)))
+		})
 		return ui.scroll(box)
 	}
 }
 
-// Сиденья: "H" человек, "N" нейросеть через промпт, "L" соперник по сети, остальные — боты (VBots)
-class VariantGameScreen(a: MainActivity, private val base: Variant, private val white: String, private val black: String,
-	private val link: ru.cersat.chessics.data.Link? = null, private val remoteName: String = "", dealt: Boolean = false) : Screen(a) {
-	private val v: Variant = if (dealt) base else base.dealt()
-	private val pos = VPos(v).also { it.record() }
+// Сиденья: "H" человек, "N" нейросеть через промпт, "L" соперник по сети, остальные — боты (VBots).
+// На четверых сидений четыре (белые/чёрные = первое/второе, extra — третье и четвёртое).
+class VariantGameScreen(a: MainActivity, private val base: Variant, white: String, black: String,
+	private val link: ru.cersat.chessics.data.Link? = null, private val remoteName: String = "", dealt: Boolean = false,
+	extra: List<String> = emptyList()) : Screen(a) {
+	private val seats = listOf(white, black) + extra
+	private val n = base.players
+	private val placing0 = base.setup
+	private val pool = Array(4) { mutableListOf<Int>() } // набор фигур каждого цвета при расстановке
+	private var v: Variant = if (placing0) base.copy().also { d ->
+		for (i in d.cells.indices) { val c = d.cells[i]; if (c != 0 && d.has(c) && (c shr 8) < d.players) pool[c shr 8].add(c); d.cells[i] = 0 }
+		d.setup = false
+		for (list in d.shuf) list.clear()
+		for (list in pool) list.sortByDescending { c -> d.piece(c).value }
+	} else if (dealt) base else base.dealt()
+	private var pos = VPos(v).also { it.record() }
+	private var placing = placing0
+	private var placeColor = 0
+	private var pickCode = 0
+	private val trayBox by lazy { ui.col(0, 0) }
 	init {
 		// пасхалка: фигура без единого хода стоит на доске
 		if (v.cells.any { it != 0 && v.has(it) && v.piece(it).moves.isEmpty() })
 			ru.cersat.chessics.data.Eggs.find(a.store, "statue")?.let { msg -> BotRunner.main.post { a.toast(msg) } }
+		v.dealtWarning?.let { w -> BotRunner.main.post { a.toast("Внимание: $w") } }
 	}
-	private val seats = listOf(white, black)
 	private val fairyPlan = if (seats.any { it.startsWith("F") }) FairyVariant.plan(v).plan else null
 	private val bots: List<VBot?> = seats.map { s ->
 		if (s.startsWith("F")) fairyPlan?.let { FairyVBot(a, s.drop(1).toIntOrNull() ?: 0, it) { msg -> BotRunner.main.post { a.toast(msg) } } } ?: VMaterial(3)
@@ -616,6 +760,7 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 	private var linkLost = false
 	private val remoteColor = seats.indexOf("L")
 	private val neuralBox by lazy { ui.col(0, 0) }
+	private var manualBottom = -1
 
 	init {
 		link?.onClosed = { BotRunner.main.post { if (result < 0) { linkLost = true; a.toast("Соединение с соперником потеряно"); redraw() } } }
@@ -630,7 +775,7 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 				if (m == null) { a.toast("Соперник прислал ход, которого нет по правилам — партии разошлись"); return }
 				apply(m)
 			}
-			"resign" -> finish(remoteColor xor 1, "соперник сдался")
+			"resign" -> finish(1 - pos.team(remoteColor), "соперник сдался")
 		}
 	}
 	private val log = ArrayList<String>()
@@ -647,38 +792,56 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 	private lateinit var moves: TextView
 	private lateinit var controls: LinearLayout
 
+	private fun sideName(c: Int) = v.colorName(c)
+	private fun teamName(t: Int) = if (n == 4) (if (t == 0) "красных и жёлтых" else "синих и зелёных") else (if (t == 0) "белых" else "чёрных")
+
 	override fun build(): View {
 		val root = ui.col(10, 8)
 		root.addView(ui.row(8, ui.button("‹", false) { a.goBack() }, ui.text(v.name, 15f, bold = true)))
 		root.addView(bar.detached(), ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(18)))
 		board.v = v
-		board.flipped = seats[0] != "H" && seats[1] == "H"
-		board.canMove = { result < 0 && seats[pos.turn] == "H" && !thinking }
+		board.flipped = n == 2 && seats[0] != "H" && seats[1] == "H"
+		board.canMove = { result < 0 && !placing && seats[pos.turn] == "H" && !thinking }
 		board.onMove = { ms -> human(ms) }
 		root.addView(board.detached(), ui.lp())
 		status = ui.text("", 15f, ui.t.text, true, Gravity.CENTER)
 		root.addView(status, ui.lp())
+		root.addView(trayBox.detached(), ui.lp())
 		root.addView(neuralBox.detached(), ui.lp())
 		controls = ui.row(8)
 		root.addView(controls, ui.lp())
 		moves = ui.sub("")
 		root.addView(moves, ui.lp())
 		redraw()
-		maybeBot()
+		if (placing) placeNext() else maybeBot()
 		return ui.scroll(root)
+	}
+
+	private fun bottomSeat(): Int {
+		if (manualBottom >= 0) return manualBottom
+		val humans = seats.indices.filter { seats[it] == "H" }
+		return when {
+			humans.isEmpty() -> 0
+			humans.size > 1 && seats[if (placing) placeColor else pos.turn] == "H" -> if (placing) placeColor else pos.turn // передают телефон — доска к ходящему
+			else -> humans[0]
+		}
 	}
 
 	private fun redraw() {
 		board.sq = pos.sq
 		board.lastMove = lastMove
-		board.legal = if (result < 0) pos.legal() else emptyList()
-		board.check = if (result < 0) pos.royals(pos.turn).firstOrNull { pos.attacked(it, 1 - pos.turn) } ?: -1 else -1
+		val live = result < 0 && !placing
+		board.legal = if (live) pos.legal() else emptyList()
+		board.check = if (live) pos.royals(pos.turn).firstOrNull { pos.attacked(it, pos.foe(pos.turn)) } ?: -1 else -1
+		if (n == 4) board.seatDown = bottomSeat()
 		board.clearSel()
 		// полоса: материал, а при конце партии — решающий счёт
 		bar.cp = when (result) { 0 -> 3000; 1 -> -3000; 2 -> 0; else -> pos.material().coerceIn(-3000, 3000) }
 		bar.label = when (result) { 0 -> "1-0"; 1 -> "0-1"; 2 -> "½"; else -> "%+.1f".format(pos.material() / 100f) }
-		val side = if (pos.turn == 0) "белые" else "чёрные"
-		status.text = when (result) {
+		val side = sideName(pos.turn)
+		status.text = if (placing) {
+			"Расстановка: ${sideName(placeColor)} — осталось ${pool[placeColor].size}" + if (seats[placeColor] == "H") "" else " (думает бот)"
+		} else when (result) {
 			-1 -> (when {
 				linkLost -> "Соединение потеряно"
 				thinking -> "${side.replaceFirstChar { it.uppercase() }} думают…"
@@ -689,20 +852,112 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 				(if (board.check >= 0) " · шах!" else "") +
 				(if (v.win == Variant.WIN_CHECKS) " · шахи ${pos.checks[0]}:${pos.checks[1]} из ${v.nChecks}" else "")
 			2 -> "Ничья · $reason"
-			else -> "Победа ${if (result == 0) "белых" else "чёрных"} · $reason"
+			else -> "Победа ${teamName(result)} · $reason"
 		}
-		moves.text = log.chunked(2).mapIndexed { i, p -> "${i + 1}. ${p.joinToString(" ")}" }.joinToString("   ")
+		moves.text = log.chunked(n).mapIndexed { i, p -> "${i + 1}. ${p.joinToString(" ")}" }.joinToString("   ")
 		updateNeural()
+		updateTray()
 		controls.removeAllViews()
-		controls.addView(ui.button("⇅ Перевернуть", false) { board.flipped = !board.flipped; board.invalidate() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		if (n == 4) controls.addView(ui.button("⟳ Повернуть", false) { manualBottom = (board.seatDown + 1) % 4; redraw() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		else controls.addView(ui.button("⇅ Перевернуть", false) { board.flipped = !board.flipped; board.invalidate() }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 		val humans = seats.indices.filter { seats[it] == "H" }
-		if (result < 0 && humans.size == 1) controls.addView(ui.button("⚑ Сдаться", false) {
+		val humanTeams = humans.map { pos.team(it) }.toSet()
+		if (result < 0 && humanTeams.size == 1) controls.addView(ui.button("⚑ Сдаться", false) {
 			a.dialog("Сдаться?", ui.sub("Партия будет проиграна."), "Сдаться" to {
 				link?.send(JSONObject().put("t", "resign"))
-				finish(1 - humans[0], "сдача")
+				finish(1 - humanTeams.first(), "сдача")
 			}, "Играть дальше" to {})
 		}, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-		if (result >= 0 && link == null) controls.addView(ui.button("Ещё партия") { a.replace(VariantGameScreen(a, base, white, black)) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+		if (result >= 0 && link == null) controls.addView(ui.button("Ещё партия") { a.replace(again()) }, ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+	}
+
+	private fun again() = VariantGameScreen(a, base, seats[0], seats[1], extra = seats.drop(2))
+
+	// ===== расстановка перед партией =====
+
+	private fun freeZone(c: Int) = v.zoneCells(c).filter { pos.sq[it] == 0 }
+
+	private fun updateTray() {
+		trayBox.removeAllViews()
+		board.onPlace = null; board.placeCells = emptySet()
+		if (!placing) return
+		if (seats[placeColor] != "H") return
+		val c = placeColor
+		board.placeCells = freeZone(c).toSet()
+		board.onPlace = { i -> if (i in board.placeCells && pickCode != 0 && pool[c].contains(pickCode)) putPiece(c, pickCode, i) }
+		if (pickCode == 0 || !pool[c].contains(pickCode)) pickCode = pool[c].firstOrNull() ?: 0
+		trayBox.addView(ui.sub("Выбери фигуру и нажми зелёную клетку:"))
+		val kinds = pool[c].distinct()
+		val row = ui.row(6)
+		for (code in kinds) {
+			val d = v.piece(code)
+			val cnt = pool[c].count { it == code }
+			val icon = object : View(a) {
+				override fun onDraw(cv: Canvas) {
+					VArt.draw(context, cv, d, c, 0f, 0f, minOf(width, height).toFloat(), n == 4)
+					val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); textSize = height * 0.3f; isFakeBoldText = true; setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()) }
+					cv.drawText("$cnt", width - tp.measureText("$cnt") - 4f, height - 6f, tp)
+				}
+			}
+			ui.clickable(icon, if (code == pickCode) ui.t.accent else ui.t.card2, 12f) { pickCode = code; redraw() }
+			row.addView(icon, LinearLayout.LayoutParams(ui.dp(52), ui.dp(52)))
+		}
+		trayBox.addView(ui.hscroll(row))
+	}
+
+	private fun putPiece(c: Int, code: Int, cell: Int) {
+		pool[c].remove(code)
+		pos.sq[cell] = code
+		Sounds.play(a, Sounds.Kind.MOVE)
+		placeNext()
+	}
+
+	// следующий ход расстановки: цвета ставят по одной фигуре по очереди
+	private fun placeNext() {
+		token++
+		var guard = 0
+		while (guard++ < 8) {
+			if (pool.take(n).all { it.isEmpty() }) { endPlacement(); return }
+			if (pool[placeColor].isNotEmpty() && freeZone(placeColor).isEmpty()) {
+				a.toast("У ${sideName(placeColor)} в зоне не хватило клеток — оставшиеся фигуры не выставлены")
+				pool[placeColor].clear()
+			}
+			if (pool[placeColor].isEmpty()) { placeColor = (placeColor + 1) % n; continue }
+			break
+		}
+		redraw()
+		if (seats[placeColor] != "H") {
+			val my = token
+			BotRunner.main.postDelayed({ if (token == my && placing) botPlace(placeColor) }, 150)
+		}
+	}
+
+	// бот ставит фигуру: короля и тяжёлые — к своей линии, пешки — на вторую, остальное случайно
+	private fun botPlace(c: Int) {
+		val code = pool[c].firstOrNull { v.piece(it).royal } ?: pool[c].random()
+		val d = v.piece(code)
+		val free = freeZone(c)
+		val cell = free.maxByOrNull { i ->
+			val ly = v.toLy(c, i)
+			val want = when { d.pawn -> 1; d.royal -> 0; else -> 0 }
+			-Math.abs(ly - want) * 3.0 + Math.random() * 4
+		} ?: return
+		putPiece(c, code, cell)
+	}
+
+	private fun endPlacement() {
+		placing = false
+		val nv = v.copy()
+		nv.cells = pos.sq.copyOf()
+		v = nv
+		pos = VPos(v).also { it.record() }
+		board.v = v
+		board.onPlace = null; board.placeCells = emptySet()
+		token++
+		val r = pos.result()
+		if (r >= 0) { redraw(); finish(r, reasonFor(r)); return }
+		redraw()
+		maybeBot()
 	}
 
 	private fun human(ms: List<Int>) {
@@ -712,7 +967,7 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 		var dlg: android.app.AlertDialog? = null
 		for (m in ms) {
 			val d = v.pieces[VM.promo(m) - 1]
-			val icon = object : View(a) { override fun onDraw(c: Canvas) = VArt.draw(context, c, d, pos.turn, 0f, 0f, minOf(width, height).toFloat()) }
+			val icon = object : View(a) { override fun onDraw(c: Canvas) = VArt.draw(context, c, d, pos.turn, 0f, 0f, minOf(width, height).toFloat(), n == 4) }
 			ui.clickable(icon, ui.t.card2, 12f) { dlg?.dismiss(); apply(m) }
 			body.addView(icon, LinearLayout.LayoutParams(0, ui.dp(64), 1f))
 		}
@@ -720,7 +975,7 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 	}
 
 	private fun apply(m: Int) {
-		if (result >= 0 || m !in pos.legal()) return
+		if (result >= 0 || placing || m !in pos.legal()) return
 		if (link != null && seats[pos.turn] == "H") link.send(JSONObject().put("t", "vmove").put("f", VM.from(m)).put("to", VM.to(m)).put("p", VM.promo(m)).put("ply", log.size))
 		val cap = pos.sq[VM.to(m)] != 0 || VM.flags(m) and VM.EP != 0
 		log.add(pos.moveName(m))
@@ -738,14 +993,15 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 
 	private fun reasonFor(r: Int): String {
 		if (r == 2) return when {
-			pos.quiet >= 100 -> "50 ходов без взятий и ходов пешками"
+			pos.quiet >= 50 * n -> "${50} ходов без взятий и ходов пешками"
 			(pos.history[pos.key()] ?: 0) >= 3 -> "троекратное повторение"
 			else -> "пат"
 		}
+		val last = pos.prev()
 		return when (v.win) {
 			Variant.WIN_CAPTURE_ROYAL -> "король взят"
 			Variant.WIN_ALL -> "все фигуры взяты"
-			Variant.WIN_HILL -> if (pos.royals(r).any { pos.onHill(it) }) "король на холме" else "мат"
+			Variant.WIN_HILL -> if (pos.royals(last).any { pos.onHill(it) }) "король на холме" else "мат"
 			Variant.WIN_CHECKS -> if (pos.checks[r] >= v.nChecks) "${v.nChecks} шахов" else "мат"
 			Variant.WIN_PROMO -> if (pos.promoted == r) "пешка дошла до конца" else "мат"
 			else -> if (pos.legal().isEmpty() && !pos.inCheck(pos.turn)) "пат" else "мат"
@@ -753,7 +1009,7 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 	}
 
 	private fun maybeBot() {
-		if (result >= 0 || thinking) return
+		if (result >= 0 || thinking || placing) return
 		val bot = bots[pos.turn] ?: return
 		thinking = true
 		redraw()
@@ -771,17 +1027,49 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 		}
 	}
 
+	// сиденье → описание игрока для наград и рейтинга; null — не бот (человек, нейросеть, сеть)
+	private fun botOf(s: String): ru.cersat.chessics.bots.Player? = when {
+		s == "R" -> ru.cersat.chessics.bots.Player(ru.cersat.chessics.bots.Player.Kind.RANDOM, 0)
+		s.startsWith("M") -> ru.cersat.chessics.bots.Player(ru.cersat.chessics.bots.Player.Kind.MATERIAL, s.drop(1).toIntOrNull() ?: 2)
+		s.startsWith("A") -> ru.cersat.chessics.bots.Player(ru.cersat.chessics.bots.Player.Kind.ALGO, s.drop(1).toIntOrNull() ?: 3)
+		s.startsWith("F") -> ru.cersat.chessics.bots.Player(ru.cersat.chessics.bots.Player.Kind.STOCKFISH, s.drop(1).toIntOrNull() ?: 0)
+		else -> null
+	}
+
+	private fun nameOf(c: Int) = if (seats[c] == "L") remoteName.ifEmpty { "Соперник" } else VBots.title(seats[c])
+	private fun sideLine(team: Int) = (0 until n).filter { it and 1 == team }.joinToString(" + ") { nameOf(it) }
+
 	private fun saveHistory(r: Int, why: String) {
 		if (played.isEmpty()) return
-		fun name(c: Int) = if (seats[c] == "L") remoteName.ifEmpty { "Соперник" } else VBots.title(seats[c])
 		val o = JSONObject()
 			.put("date", java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault()).format(java.util.Date()))
-			.put("w", name(0)).put("b", name(1))
+			.put("w", sideLine(0)).put("b", sideLine(1))
 			.put("res", when (r) { 0 -> "1-0"; 1 -> "0-1"; else -> "1/2-1/2" }).put("reason", why)
 			.put("uci", "").put("tc", "").put("variant", 0)
 			.put("custom", v.json())
 			.put("vmoves", JSONArray().apply { played.forEach { m -> put(JSONArray().put(VM.from(m)).put(VM.to(m)).put(VM.promo(m))) } })
 		a.store.saveGame(o)
+	}
+
+	// награды и статистика, как в обычных партиях: победа над ботом в своём варианте — это победа над ботом
+	private fun giveRewards(r: Int, why: String): ru.cersat.chessics.data.Store.Reward? {
+		if (link != null || played.isEmpty()) return null
+		val humans = seats.indices.filter { seats[it] == "H" }
+		val st = a.store
+		val plies = played.size
+		if (n == 2) {
+			if (humans.size == 2) return st.gameFinished(null, 0.5, plies, 0, true, false, false)
+			if (humans.size != 1) return null
+			val bot = botOf(seats[1 - humans[0]]) ?: return null
+			val score = if (r == 2) 0.5 else if (r == humans[0]) 1.0 else 0.0
+			return st.gameFinished(bot, score, plies, 0, false, score >= 1.0 && why == "мат", false)
+		}
+		// на четверых — как в «На четверых»: человек (или люди) в одной команде против ботов
+		val teams = humans.map { it and 1 }.toSet()
+		if (teams.size != 1) return null
+		val mine = teams.first()
+		if ((0 until n).none { it and 1 != mine && seats[it] != "H" }) return null
+		return st.fourFinished(r == mine, r == 2, plies)
 	}
 
 	private fun finish(r: Int, why: String) {
@@ -790,22 +1078,24 @@ class VariantGameScreen(a: MainActivity, private val base: Variant, private val 
 		result = r; reason = why
 		token++; thinking = false
 		Sounds.play(a, Sounds.Kind.END)
+		val reward = giveRewards(r, why)
 		redraw()
-		val head = when (r) { 2 -> "Ничья"; 0 -> "Победа белых"; else -> "Победа чёрных" }
-		val body = ui.sub(why.replaceFirstChar { it.uppercase() }, 15f)
+		val head = when (r) { 2 -> "Ничья"; else -> "Победа ${teamName(r)}" }
+		val body = ui.col(0, 4)
+		body.addView(ui.sub(why.replaceFirstChar { it.uppercase() }, 15f))
+		reward?.lines?.forEach { body.addView(ui.sub(it, 14f)) }
 		if (link != null) a.dialog(head, body, "Посмотреть доску" to {}, "Анализ партии" to { openReview(head, why) }, "В меню" to { a.showTab(2) })
-		else a.dialog(head, body, "Анализ партии" to { openReview(head, why) }, "Ещё партия" to { a.replace(VariantGameScreen(a, base, white, black)) }, "В меню" to { a.showTab(2) })
+		else a.dialog(head, body, "Анализ партии" to { openReview(head, why) }, "Ещё партия" to { a.replace(again()) }, "В меню" to { a.showTab(2) })
 	}
 
 	private fun openReview(head: String, why: String) {
-		fun name(c: Int) = if (seats[c] == "L") remoteName.ifEmpty { "Соперник" } else VBots.title(seats[c])
-		a.push(VariantReviewScreen(a, v, played.map { intArrayOf(VM.from(it), VM.to(it), VM.promo(it)) }, "${name(0)} — ${name(1)} · ${v.name}", "$head · $why"))
+		a.push(VariantReviewScreen(a, v, played.map { intArrayOf(VM.from(it), VM.to(it), VM.promo(it)) }, "${sideLine(0)} — ${sideLine(1)} · ${v.name}", "$head · $why"))
 	}
 
 	// ход нейросети: промпт → ответ → проверка
 	private fun updateNeural() {
 		neuralBox.removeAllViews()
-		if (result >= 0 || seats[pos.turn] != "N" || thinking) return
+		if (result >= 0 || placing || n != 2 || seats[pos.turn] != "N" || thinking) return
 		neuralBox.addView(Neural.panel(a, if (pos.turn == 0) "белые" else "чёрные",
 			prompt = { Neural.prompt(pos, logEn) },
 			tryAnswer = { text ->
@@ -838,6 +1128,9 @@ object VariantAnalyzer {
 		val evals = HashMap<Int, Int>() // оценка позиции после i полуходов, за белых
 		val best = HashMap<Int, String>() // лучший ход Fairy в позиции i
 		val second = HashMap<Int, Int>() // оценка второй линии (для «отличного» хода)
+		val bestInt = HashMap<Int, Int>() // лучший ход движка «Материал» (уже в наших ходах)
+		var engine = "Fairy-Stockfish" // кто считает сейчас
+		var note: String? = null // почему сменился движок
 		@Volatile var running = false
 		var error: String? = null
 		val complete get() = evals.size >= n
@@ -852,13 +1145,29 @@ object VariantAnalyzer {
 	fun unlisten(key: String, f: () -> Unit) { listeners[key]?.remove(f) }
 	private fun notify(key: String) = listeners[key]?.toList()?.forEach { it() }
 
-	fun start(ctx: android.content.Context, key: String, plan: FairyVariant.Plan, positions: List<VPos>) {
+	private val materialExec by lazy { java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r).apply { isDaemon = true } } }
+
+	// Простой движок на чистом материале: перебор с форсированными взятиями. Работает в любом варианте, в том числе там, где Fairy не справляется.
+	private fun materialLine(p: VPos): Triple<Int, Int?, Int?> { // оценка за белых, лучший ход, оценка второй линии
+		val sign = if (p.team(p.turn) == 0) 1 else -1
+		fun cp(x: Int) = if (Math.abs(x) >= 500_000) (if (x > 0) 10000 else -10000) * sign else x * sign
+		val depth = if (p.n <= 64) 4 else if (p.n <= 144) 3 else 2
+		var lines = VMaterial(depth).lines(p, depth, 900)
+		if (lines.isEmpty()) lines = VMaterial(1).lines(p, 1, 3000)
+		if (lines.isEmpty()) return Triple(p.material().coerceIn(-3000, 3000), null, null)
+		return Triple(cp(lines[0].second), lines[0].first, lines.getOrNull(1)?.let { cp(it.second) })
+	}
+
+	// plan == null — Fairy этот вариант не понимает, считает «Материал». Если Fairy замолчит посреди разбора, дальше тоже считает «Материал».
+	fun start(ctx: android.content.Context, key: String, plan: FairyVariant.Plan?, positions: List<VPos>) {
 		val st = states.getOrPut(key) { State(positions.size) }
 		if (st.running || st.complete) return
 		st.running = true; st.error = null
+		if (plan == null) st.engine = "Материал"
 		val app = ctx.applicationContext
 		val eng = Stockfish.fairyReview
-		eng.exec.execute {
+		var useFairy = plan != null
+		fun run() {
 			for (i in positions.indices) {
 				if (st.evals.containsKey(i)) continue
 				val p = positions[i]
@@ -868,20 +1177,32 @@ object VariantAnalyzer {
 					BotRunner.main.post { st.evals[i] = score; notify(key) }
 					continue
 				}
-				val lines = eng.customLines(app, plan.section, plan.ini, FairyVariant.fen(p, plan), p.turn == 0, 500, 2)
-				if (lines.isNullOrEmpty()) {
-					BotRunner.main.post { st.running = false; st.error = eng.lastError ?: "Fairy-Stockfish не ответил"; notify(key) }
-					return@execute
+				if (useFairy && plan != null) {
+					val lines = eng.customLines(app, plan.section, plan.ini, FairyVariant.fen(p, plan), p.turn == 0, 500, 2)
+					if (!lines.isNullOrEmpty()) {
+						BotRunner.main.post {
+							st.evals[i] = lines[0].score
+							st.best[i] = lines[0].move
+							lines.getOrNull(1)?.let { st.second[i] = it.score }
+							notify(key)
+						}
+						continue
+					}
+					useFairy = false
+					val why = eng.lastError ?: "не ответил"
+					BotRunner.main.post { st.engine = "Материал"; st.note = "Fairy-Stockfish не справился ($why) — дальше считает «Материал»"; notify(key) }
 				}
+				val (score, best, second) = try { materialLine(p) } catch (e: Exception) { Triple(p.material().coerceIn(-3000, 3000), null, null) }
 				BotRunner.main.post {
-					st.evals[i] = lines[0].score
-					st.best[i] = lines[0].move
-					lines.getOrNull(1)?.let { st.second[i] = it.score }
+					st.evals[i] = score
+					best?.let { st.bestInt[i] = it }
+					second?.let { st.second[i] = it }
 					notify(key)
 				}
 			}
 			BotRunner.main.post { st.running = false; notify(key) }
 		}
+		if (plan != null) eng.exec.execute { run() } else materialExec.execute { run() }
 	}
 
 	// сколько материала сторона отдаёт ходом: что может забрать соперник сразу после, минус то, что взяли сами
@@ -894,25 +1215,25 @@ object VariantAnalyzer {
 		var loss = 0
 		for (c in p.legal()) {
 			val victim = p.sq[VM.to(c)]
-			if (victim == 0 || p.color(victim) != mover || p.def(victim).royal) continue
+			if (victim == 0 || p.team(p.color(victim)) != p.team(mover) || p.def(victim).royal) continue
 			val q = p.copy(); q.make(c)
 			val attacker = p.def(p.sq[VM.from(c)]).value
-			val gain = p.def(victim).value - (if (q.attacked(VM.to(c), mover)) attacker else 0)
+			val gain = p.def(victim).value - (if (q.attacked(VM.to(c), q.team(mover))) attacker else 0)
 			loss = maxOf(loss, gain)
 		}
 		return loss - capVal
 	}
 
 	// тип хода по тем же правилам, что в обычном разборе (Judge.classify)
-	fun classify(before: VPos, m: Int, played: Int, st: State, i: Int, plan: FairyVariant.Plan): MoveClass? {
+	fun classify(before: VPos, m: Int, played: Int, st: State, i: Int, plan: FairyVariant.Plan?): MoveClass? {
 		val wbScore = st.evals[i] ?: return null
 		val after = st.evals[i + 1] ?: return null
 		if (before.legal().size == 1) return MoveClass.FORCED
-		val sign = if (before.turn == 0) 1 else -1
+		val sign = if (before.team(before.turn) == 0) 1 else -1
 		val wb = ru.cersat.chessics.bots.Judge.winPct(wbScore * sign)
 		val wa = ru.cersat.chessics.bots.Judge.winPct(after * sign)
 		val loss = maxOf(0.0, wb - wa)
-		val isBest = st.best[i]?.let { FairyVariant.parse(before, plan, it) } == played
+		val isBest = st.bestInt[i]?.let { it == played } ?: (plan != null && st.best[i]?.let { FairyVariant.parse(before, plan, it) } == played)
 		if ((isBest || loss < 2) && wa >= 45 && wb < 97 && sacrifice(before, m) >= 200) return MoveClass.BRILLIANT
 		if (isBest) st.second[i]?.let { s2 -> if (wb - ru.cersat.chessics.bots.Judge.winPct(s2 * sign) >= 15 && wb < 97) return MoveClass.GREAT }
 		return when {
@@ -971,7 +1292,7 @@ class VariantReviewScreen(a: MainActivity, private val v: Variant, private val m
 		box.addView(list, ui.lp())
 		VariantAnalyzer.unlisten(key, listener)
 		VariantAnalyzer.listen(key, listener)
-		plan.plan?.let { VariantAnalyzer.start(a, key, it, positions) }
+		VariantAnalyzer.start(a, key, plan.plan, positions)
 		show(false)
 		return ui.scroll(box)
 	}
@@ -979,8 +1300,7 @@ class VariantReviewScreen(a: MainActivity, private val v: Variant, private val m
 	private fun classOf(i: Int): MoveClass? {
 		classes[i]?.let { return it }
 		val st = VariantAnalyzer.state(key) ?: return null
-		val pl = plan.plan ?: return null
-		val c = VariantAnalyzer.classify(positions[i], played[i], played[i], st, i, pl) ?: return null
+		val c = VariantAnalyzer.classify(positions[i], played[i], played[i], st, i, plan.plan) ?: return null
 		classes[i] = c
 		return c
 	}
@@ -992,15 +1312,10 @@ class VariantReviewScreen(a: MainActivity, private val v: Variant, private val m
 		val last = if (ply > 0) played[ply - 1] else 0
 		board.sq = p.sq
 		board.lastMove = last
-		board.check = p.royals(p.turn).firstOrNull { p.attacked(it, 1 - p.turn) } ?: -1
+		board.check = p.royals(p.turn).firstOrNull { p.attacked(it, p.foe(p.turn)) } ?: -1
 		board.fx.clear()
 		board.hint = 0
-		if (plan.plan == null) {
-			info.text = "Анализ недоступен: Fairy-Stockfish не понимает этот вариант (${plan.reason})."
-			graph.values = emptyList()
-			buildList(null); board.invalidate(); return
-		}
-		if (st == null) { info.text = "Fairy-Stockfish анализирует в фоне…"; buildList(null); board.invalidate(); return }
+		if (st == null) { info.text = "Анализ идёт в фоне…"; buildList(null); board.invalidate(); return }
 		// график — по уже посчитанным подряд позициям
 		val seq = ArrayList<Int>()
 		while (st.evals.containsKey(seq.size)) seq.add(st.evals[seq.size]!!)
@@ -1011,15 +1326,17 @@ class VariantReviewScreen(a: MainActivity, private val v: Variant, private val m
 			if (animate && (cls == MoveClass.BRILLIANT || cls == MoveClass.GREAT)) board.fx.celebrate(VM.to(last), cls)
 			else board.fx.set(VM.to(last), cls)
 		}
-		val bm = st.best[ply]?.let { FairyVariant.parse(p, plan.plan, it) } ?: 0
+		val bm = st.bestInt[ply] ?: st.best[ply]?.let { u -> plan.plan?.let { FairyVariant.parse(p, it, u) } } ?: 0
 		if (bm != 0 && ply < played.size) board.hint = bm
 		board.invalidate()
 		var t = st.evals[ply]?.let { e -> "Оценка: " + if (kotlin.math.abs(e) >= 9000) "мат" else String.format(java.util.Locale.US, "%+.2f", e / 100.0) }
 			?: "Эта позиция ещё считается…"
 		if (cls != null) t += " · ${names[ply - 1]} ${cls.symbol} — ${cls.title}"
 		if (bm != 0) t += "\nЛучший ход здесь: ${p.moveName(bm)} (синяя стрелка)"
+		t += "\nСчитает: ${st.engine}" + (if (plan.plan == null) " — Fairy-Stockfish не понимает этот вариант (${plan.reason})" else "") + (if (st.engine == "Материал") " · только материал, без позиционной оценки" else "")
+		st.note?.let { t += "\n$it" }
 		if (st.error != null) t += "\nАнализ остановился: ${st.error}"
-		else if (!st.complete) t += "\nFairy-Stockfish досчитывает в фоне: ${st.evals.size} / ${positions.size}"
+		else if (!st.complete) t += "\nДосчитывается в фоне: ${st.evals.size} / ${positions.size}"
 		info.text = t
 		buildList(st)
 	}
@@ -1030,14 +1347,14 @@ class VariantReviewScreen(a: MainActivity, private val v: Variant, private val m
 			var acc = 0.0; var cnt = 0
 			val counts = HashMap<MoveClass, Int>()
 			for (i in played.indices) {
-				if (positions[i].turn != side) continue
+				if (positions[i].team(positions[i].turn) != side) continue
 				val c = classOf(i) ?: continue
 				val sign = if (side == 0) 1 else -1
 				val l = maxOf(0.0, ru.cersat.chessics.bots.Judge.winPct(st.evals[i]!! * sign) - ru.cersat.chessics.bots.Judge.winPct(st.evals[i + 1]!! * sign))
 				acc += (103.1668 * Math.exp(-0.04354 * l) - 3.1669).coerceIn(0.0, 100.0); cnt++
 				counts[c] = (counts[c] ?: 0) + 1
 			}
-			val name = if (side == 0) "Белые" else "Чёрные"
+			val name = if (v.players == 4) (if (side == 0) "Красные+жёлтые" else "Синие+зелёные") else if (side == 0) "Белые" else "Чёрные"
 			list.addView(ui.text(String.format(java.util.Locale.US, "%s · %.0f%%", name, if (cnt > 0) acc / cnt else 0.0), 13f, ui.t.text, true))
 			val chipsRow = ui.row(4)
 			for (c in MoveClass.values()) {

@@ -34,13 +34,14 @@ class PieceDef(
 	var castleLong = true
 	var stepsShort = 2
 	var stepsLong = 2
+	var castleAxis = 0 // 0 — рокировка вдоль горизонтали (влево-вправо), 1 — вдоль вертикали (вверх-вниз)
 
 	fun json(): JSONObject = JSONObject().put("name", name).put("symbol", symbol).put("art", art).put("value", value)
 		.put("royal", royal).put("pawn", pawn).put("castler", castler).put("moves", JSONArray().apply { moves.forEach { put(it.json()) } })
-		.put("castleShort", castleShort).put("castleLong", castleLong).put("stepsShort", stepsShort).put("stepsLong", stepsLong)
+		.put("castleShort", castleShort).put("castleLong", castleLong).put("stepsShort", stepsShort).put("stepsLong", stepsLong).put("castleAxis", castleAxis)
 
 	fun copy() = PieceDef(name, symbol, art, value, royal, pawn, castler, moves.toMutableList()).also {
-		it.castleShort = castleShort; it.castleLong = castleLong; it.stepsShort = stepsShort; it.stepsLong = stepsLong
+		it.castleShort = castleShort; it.castleLong = castleLong; it.stepsShort = stepsShort; it.stepsLong = stepsLong; it.castleAxis = castleAxis
 	}
 
 	companion object {
@@ -50,7 +51,7 @@ class PieceDef(
 				o.optBoolean("royal"), o.optBoolean("pawn"), o.optBoolean("castler"),
 				MutableList(arr.length()) { MoveRule.from(arr.getJSONObject(it)) }).also {
 				it.castleShort = o.optBoolean("castleShort", true); it.castleLong = o.optBoolean("castleLong", true)
-				it.stepsShort = o.optInt("stepsShort", 2).coerceIn(2, 6); it.stepsLong = o.optInt("stepsLong", 2).coerceIn(2, 6)
+				it.stepsShort = o.optInt("stepsShort", 2).coerceIn(2, 6); it.stepsLong = o.optInt("stepsLong", 2).coerceIn(2, 6); it.castleAxis = o.optInt("castleAxis", 0).coerceIn(0, 1)
 			}
 		}
 
@@ -88,15 +89,29 @@ class Variant(
 	var promo = mutableListOf<String>() // в кого превращаются пешки (имена фигур); пусто — не превращаются
 	var shuffle = false // перемешивать первую линию перед каждой партией, как в Chess960
 	var hill: BooleanArray = BooleanArray(w * h) // клетки холма; ни одной — центр доски
-	// клетки превращения пешек каждого цвета; ни одной — последняя горизонталь
-	var promoWhite: BooleanArray = BooleanArray(w * h)
-	var promoBlack: BooleanArray = BooleanArray(w * h)
+	// клетки превращения пешек каждого цвета; ни одной — последняя горизонталь (на четверых — средняя линия)
+	var promoZ: Array<BooleanArray> = Array(4) { BooleanArray(w * h) }
+	val promoWhite get() = promoZ[0]
+	val promoBlack get() = promoZ[1]
+	var players = 2 // 2 или 4 (команды 0+2 против 1+3, доска квадратная)
+	var setup = false // расстановка: перед партией игроки по очереди ставят фигуры, лежащие на доске, в свои зоны
+	var zone: Array<BooleanArray> = Array(4) { BooleanArray(w * h) } // зоны расстановки каждого цвета
+	var shuf: Array<MutableList<Int>> = Array(4) { mutableListOf<Int>() } // клетки перемешивания каждого цвета в порядке выбора
+	var dealtWarning: String? = null
+
+	fun rot(c: Int) = if (players == 2) c * 2 else c
+	// локальные координаты игрока (как у белых снизу) → клетка доски, и обратно; для четверых доска квадратная
+	fun toG(c: Int, lx: Int, ly: Int): Int = when (rot(c)) { 0 -> idx(lx, ly); 1 -> idx(ly, w - 1 - lx); 2 -> idx(w - 1 - lx, h - 1 - ly); else -> idx(w - 1 - ly, lx) }
+	fun toLx(c: Int, s: Int): Int { val x = s % w; val y = s / w; return when (rot(c)) { 0 -> x; 1 -> w - 1 - y; 2 -> w - 1 - x; else -> y } }
+	fun toLy(c: Int, s: Int): Int { val x = s % w; val y = s / w; return when (rot(c)) { 0 -> y; 1 -> x; 2 -> h - 1 - y; else -> w - 1 - x } }
+	fun team(c: Int) = c and 1
 
 	fun promoCells(color: Int): List<Int> {
-		val chosen = (if (color == 0) promoWhite else promoBlack).let { z -> z.indices.filter { z[it] && !locked[it] } }
+		val chosen = promoZ[color].let { z -> z.indices.filter { z[it] && !locked[it] } }
 		if (chosen.isNotEmpty()) return chosen
+		if (players == 4) return (0 until w * h).filter { !locked[it] && toLy(color, it) == w / 2 }
 		val y = if (color == 0) h - 1 else 0
-		return (0 until w).map { idx(it, y) }
+		return (0 until w).map { idx(it, y) }.filter { !locked[it] }
 	}
 
 	// холм: выбранные клетки, а если не выбрано ни одной — центральные 2×2 (на нечётной стороне — 1 клетка)
@@ -119,28 +134,57 @@ class Variant(
 		.put("win", win).put("nChecks", nChecks).put("stalemate", stalemate).put("castling", castling)
 		.put("enPassant", enPassant).put("pawnDouble", pawnDouble).put("promo", JSONArray(promo)).put("shuffle", shuffle)
 		.put("hill", JSONArray().apply { hill.forEach { put(it) } })
-		.put("promoWhite", JSONArray().apply { promoWhite.forEach { put(it) } })
-		.put("promoBlack", JSONArray().apply { promoBlack.forEach { put(it) } })
+		.put("promoWhite", JSONArray().apply { promoZ[0].forEach { put(it) } })
+		.put("promoBlack", JSONArray().apply { promoZ[1].forEach { put(it) } })
+		.put("promoC2", JSONArray().apply { promoZ[2].forEach { put(it) } })
+		.put("promoC3", JSONArray().apply { promoZ[3].forEach { put(it) } })
+		.put("players", players).put("setup", setup)
+		.put("zones", JSONArray().apply { for (c in 0..3) put(JSONArray().apply { zone[c].forEach { put(it) } }) })
+		.put("shuf", JSONArray().apply { for (c in 0..3) put(JSONArray(shuf[c])) })
 
 	fun copy(): Variant = from(json())
 
 	// изменить размер, сохранив то, что помещается
 	fun resize(nw: Int, nh: Int) {
 		val c = IntArray(nw * nh); val l = BooleanArray(nw * nh); val hl = BooleanArray(nw * nh)
-		val pw = BooleanArray(nw * nh); val pb = BooleanArray(nw * nh)
+		val pz = Array(4) { BooleanArray(nw * nh) }; val zz = Array(4) { BooleanArray(nw * nh) }
 		for (y in 0 until minOf(h, nh)) for (x in 0 until minOf(w, nw)) {
 			val o = idx(x, y); val n = y * nw + x
-			c[n] = cells[o]; l[n] = locked[o]; hl[n] = hill[o]; pw[n] = promoWhite[o]; pb[n] = promoBlack[o]
+			c[n] = cells[o]; l[n] = locked[o]; hl[n] = hill[o]
+			for (k in 0..3) { pz[k][n] = promoZ[k][o]; zz[k][n] = zone[k][o] }
 		}
-		w = nw; h = nh; cells = c; locked = l; hill = hl; promoWhite = pw; promoBlack = pb
+		val ow = w
+		for (k in 0..3) shuf[k] = shuf[k].filter { it % ow < nw && it / ow < nh }.map { (it / ow) * nw + it % ow }.toMutableList()
+		w = nw; h = nh; cells = c; locked = l; hill = hl; promoZ = pz; zone = zz
 	}
 
 	// расстановка для очередной партии: при перемешивании — случайная первая линия.
 	// Одинаковые «одноцветные» фигуры (как слоны) встают на клетки разного цвета, король — между двумя рокирующимися фигурами.
 	fun dealt(rnd: java.util.Random = java.util.Random()): Variant {
-		if (!shuffle) return this
+		val picked = (0 until players).any { shuf[it].size >= 2 }
+		val legacy = shuffle && players == 2
+		if (!legacy && !picked) return this
 		val d = copy()
 		d.shuffle = false
+		if (picked) {
+			// своё перемешивание: фигуры на выбранных клетках каждого цвета меняются местами; рокировка должна остаться возможной
+			val want = (0 until players).map { castleFeasible(cells, it) }
+			var tries = 0
+			while (true) {
+				for (c in 0 until players) {
+					val sel = shuf[c]
+					if (sel.size < 2) continue
+					val items = sel.map { cells[it] }.shuffled(rnd)
+					sel.forEachIndexed { i, s -> d.cells[s] = items[i] }
+				}
+				val ok = (0 until players).all { !want[it] || castleFeasible(d.cells, it) }
+				if (ok || ++tries >= 300) {
+					if (!ok) d.dealtWarning = "после перемешивания рокировка невозможна: " + (0 until players).filter { want[it] && !castleFeasible(d.cells, it) }.joinToString(", ") { colorName(it) }
+					break
+				}
+			}
+			return d
+		}
 		val white = (0 until w).map { idx(it, 0) }.filter { cells[it] != 0 && (cells[it] shr 8) == 0 }
 		val black = (0 until w).map { idx(it, h - 1) }.filter { cells[it] != 0 && (cells[it] shr 8) == 1 }
 		val mirrored = white.map { it % w } == black.map { it % w } && white.all { s -> (cells[idx(s % w, h - 1)] and 0xFF) == (cells[s] and 0xFF) }
@@ -149,6 +193,35 @@ class Variant(
 		if (mirrored) for ((x, t) in wx) d.cells[idx(x, h - 1)] = t or (1 shl 8)
 		else for ((x, t) in deal(black.map { it % w }, black.map { cells[it] and 0xFF }, h - 1, rnd)) d.cells[idx(x, h - 1)] = t or (1 shl 8)
 		return d
+	}
+
+	fun colorName(c: Int) = if (players == 2) (if (c == 0) "белые" else "чёрные") else listOf("красные", "синие", "жёлтые", "зелёные")[c]
+
+	// можно ли в принципе рокироваться цвету c в расстановке cs: есть королевская фигура и своя «рокирующаяся» фигура
+	// в нужную сторону дальше, чем шаг короля (фигуры между ними со временем уйдут)
+	fun castleFeasible(cs: IntArray, c: Int): Boolean {
+		if (!castling || players == 4) return false
+		for (k in cs.indices) {
+			val code = cs[k]
+			if (code == 0 || (code shr 8) != c || !has(code)) continue
+			val kd = piece(code)
+			if (!kd.royal) continue
+			val vertical = kd.castleAxis == 1
+			val ky = k / w; val kx = k % w
+			val kp = if (vertical) ky else kx
+			val lim = if (vertical) h else w
+			for (dir in intArrayOf(-1, 1)) {
+				if (if (dir > 0) !kd.castleShort else !kd.castleLong) continue
+				val steps = if (dir > 0) kd.stepsShort else kd.stepsLong
+				var p = kp + dir * (steps + 1)
+				while (p in 0 until lim) {
+					val rc = cs[if (vertical) idx(kx, p) else idx(p, ky)]
+					if (rc != 0 && has(rc) && (rc shr 8) == c && piece(rc).castler) return true
+					p += dir
+				}
+			}
+		}
+		return false
 	}
 
 	private fun deal(xs: List<Int>, types: List<Int>, y: Int, rnd: java.util.Random): List<Pair<Int, Int>> {
@@ -169,6 +242,26 @@ class Variant(
 			if (okColors && okKing) break
 		}
 		return xs.zip(best)
+	}
+
+	// сменить число игроков: на четверых доска квадратная, лишние цвета убираются
+	fun switchPlayers(n: Int) {
+		if (n == players) return
+		if (n == 4) {
+			val m = maxOf(w, h)
+			if (w != h) resize(m, m)
+			players = 4; castling = false; enPassant = false; shuffle = false
+		} else {
+			players = 2
+			for (i in cells.indices) if (cells[i] != 0 && (cells[i] shr 8) >= 2) cells[i] = 0
+		}
+	}
+
+	// зона расстановки цвета: выбранные клетки, а если не выбрано ни одной — две первые горизонтали игрока
+	fun zoneCells(c: Int): List<Int> {
+		val chosen = zone[c].indices.filter { zone[c][it] && !locked[it] }
+		if (chosen.isNotEmpty()) return chosen
+		return (0 until w * h).filter { !locked[it] && toLy(c, it) <= 1 }
 	}
 
 	// удалить фигуру: её клетки освобождаются, номера остальных сдвигаются
@@ -192,7 +285,7 @@ class Variant(
 		val WIN_NAMES = listOf("Мат", "Взятие короля", "Взять все фигуры", "Король на холме", "N шахов", "Пешка дошла до конца")
 		val STALEMATE_NAMES = listOf("Пат — ничья", "Пат — проигрыш", "Пат — победа")
 		const val MIN = 4
-		const val MAX = 12
+		const val MAX = 16
 
 		fun from(o: JSONObject): Variant {
 			val pa = o.optJSONArray("pieces") ?: JSONArray()
@@ -208,11 +301,15 @@ class Variant(
 			v.pawnDouble = o.optBoolean("pawnDouble", true)
 			v.shuffle = o.optBoolean("shuffle", false)
 			o.optJSONArray("hill")?.let { a -> if (a.length() == w * h) v.hill = BooleanArray(w * h) { a.optBoolean(it) } }
-			o.optJSONArray("promoWhite")?.let { a -> if (a.length() == w * h) v.promoWhite = BooleanArray(w * h) { a.optBoolean(it) } }
-			o.optJSONArray("promoBlack")?.let { a -> if (a.length() == w * h) v.promoBlack = BooleanArray(w * h) { a.optBoolean(it) } }
+			for ((k, key) in listOf("promoWhite", "promoBlack", "promoC2", "promoC3").withIndex())
+				o.optJSONArray(key)?.let { a -> if (a.length() == w * h) v.promoZ[k] = BooleanArray(w * h) { a.optBoolean(it) } }
+			v.players = if (o.optInt("players", 2) == 4 && w == h) 4 else 2
+			v.setup = o.optBoolean("setup", false)
+			o.optJSONArray("zones")?.let { za -> for (k in 0 until minOf(4, za.length())) za.optJSONArray(k)?.let { a -> if (a.length() == w * h) v.zone[k] = BooleanArray(w * h) { a.optBoolean(it) } } }
+			o.optJSONArray("shuf")?.let { sa -> for (k in 0 until minOf(4, sa.length())) sa.optJSONArray(k)?.let { a -> v.shuf[k] = MutableList(a.length()) { a.optInt(it) }.filter { it in 0 until w * h }.toMutableList() } }
 			o.optJSONArray("promo")?.let { a -> for (i in 0 until a.length()) v.promo.add(a.getString(i)) }
 			// чистим ссылки на несуществующие фигуры
-			for (i in v.cells.indices) if (v.cells[i] != 0 && !v.has(v.cells[i])) v.cells[i] = 0
+			for (i in v.cells.indices) if (v.cells[i] != 0 && (!v.has(v.cells[i]) || (v.cells[i] shr 8) >= v.players)) v.cells[i] = 0
 			v.promo.retainAll(v.pieces.map { it.name }.toSet())
 			return v
 		}
@@ -228,6 +325,28 @@ class Variant(
 				v.cells[v.idx(x, 7)] = code(back[x], 1); v.cells[v.idx(x, 6)] = code(0, 1)
 			}
 			v.promo.addAll(listOf("Ферзь", "Ладья", "Слон", "Конь"))
+			return v
+		}
+
+		// шахматы на четверых: доска 14×14 без углов 3×3, команды красные+жёлтые против синих+зелёных
+		fun four(): Variant {
+			val n = 14
+			val v = Variant("На четверых", n, n, PieceDef.standard(), IntArray(n * n), BooleanArray(n * n))
+			v.players = 4; v.castling = false; v.enPassant = false
+			for (y in 0 until n) for (x in 0 until n) if ((x < 3 || x > 10) && (y < 3 || y > 10)) v.locked[v.idx(x, y)] = true
+			val back = intArrayOf(3, 1, 2, 4, 5, 2, 1, 3)
+			for (c in 0..3) for (i in 0..7) {
+				v.cells[v.toG(c, 3 + i, 0)] = code(back[i], c)
+				v.cells[v.toG(c, 3 + i, 1)] = code(0, c)
+			}
+			v.promo.addAll(listOf("Ферзь", "Ладья", "Слон", "Конь"))
+			return v
+		}
+
+		// расстановка: фигуры лежат на доске как набор, игроки по очереди ставят их на первые две горизонтали
+		fun setupChess(): Variant {
+			val v = classic()
+			v.name = "Расстановка"; v.setup = true
 			return v
 		}
 
@@ -271,16 +390,16 @@ class VPos(val v: Variant) {
 	var turn = 0
 	var ep = -1 // клетка, через которую перепрыгнула пешка
 	var epVictim = -1
-	var checks = IntArray(2)
+	var checks = IntArray(2) // шахи по командам
 	var quiet = 0
-	var promoted = -1 // цвет, чья пешка дошла до последней горизонтали (для победы превращением)
+	var promoted = -1 // команда, чья пешка дошла до клетки превращения (для победы превращением)
 	val history = HashMap<Long, Int>()
 	private val royalTypes = v.pieces.indices.filter { v.pieces[it].royal }.toSet()
 	private val promoTypes = v.promo.mapNotNull { name -> v.pieces.indexOfFirst { it.name == name }.takeIf { it >= 0 } }
-	val hasRoyalStart = IntArray(2).also { r -> for (c in v.cells) if (c != 0 && (c and 0xFF) - 1 in royalTypes) r[c shr 8]++ }
+	val hasRoyalStart = IntArray(4).also { r -> for (c in v.cells) if (c != 0 && (c and 0xFF) - 1 in royalTypes) r[c shr 8]++ }
 	private val usesCheck get() = (v.win == Variant.WIN_MATE || v.win == Variant.WIN_HILL || v.win == Variant.WIN_CHECKS || v.win == Variant.WIN_PROMO) && royalTypes.isNotEmpty()
 	private val hillSet by lazy { v.hillCells().toHashSet() }
-	private val promoSets by lazy { arrayOf(v.promoCells(0).toHashSet(), v.promoCells(1).toHashSet()) }
+	private val promoSets by lazy { Array(4) { c -> v.promoCells(c).toHashSet() } }
 
 	fun copy(): VPos {
 		val p = VPos(v)
@@ -291,6 +410,10 @@ class VPos(val v: Variant) {
 	}
 
 	fun color(code: Int) = code shr 8
+	fun team(c: Int) = c and 1
+	fun foe(c: Int) = 1 - (c and 1) // команда соперников цвета c
+	val players get() = v.players
+	fun prev(c: Int = turn) = (c + players - 1) % players
 	fun type(code: Int) = (code and 0xFF) - 1
 	fun def(code: Int) = v.pieces[type(code)]
 	fun x(s: Int) = s % v.w
@@ -303,12 +426,14 @@ class VPos(val v: Variant) {
 	// attacks — только клетки, которые фигура бьёт (в том числе пустые), для проверки шаха
 	private fun gen(s: Int, out: MutableList<Int>, attacks: Boolean = false) {
 		val code = sq[s]; val c = color(code); val d = def(code)
-		val fy = if (c == 0) 1 else -1
+		val rt = v.rot(c)
 		val sx = x(s); val sy = y(s)
 		for (r in d.moves) {
+			val wx = when (rt) { 0 -> r.dx; 1 -> r.dy; 2 -> -r.dx; else -> -r.dy }
+			val wy = when (rt) { 0 -> r.dy; 1 -> -r.dx; 2 -> -r.dy; else -> r.dx }
 			var tx = sx; var ty = sy
 			while (true) {
-				tx += r.dx * fy; ty += r.dy * fy
+				tx += wx; ty += wy
 				if (!ok(tx, ty)) break
 				val t = ty * v.w + tx
 				val occ = sq[t]
@@ -321,14 +446,14 @@ class VPos(val v: Variant) {
 					if (r.mode != MoveRule.CAPTURE) add(s, t, d, c, out, 0)
 					// двойной ход пешки с места
 					if (d.pawn && v.pawnDouble && !moved[s] && !r.slide && r.mode == MoveRule.MOVE) {
-						val x2 = tx + r.dx * fy; val y2 = ty + r.dy * fy
+						val x2 = tx + wx; val y2 = ty + wy
 						if (ok(x2, y2) && sq[y2 * v.w + x2] == 0) add(s, y2 * v.w + x2, d, c, out, VM.DOUBLE)
 					}
 					// взятие на проходе
-					if (d.pawn && v.enPassant && t == ep && r.mode != MoveRule.MOVE && epVictim >= 0 && sq[epVictim] != 0 && color(sq[epVictim]) != c)
+					if (d.pawn && v.enPassant && t == ep && r.mode != MoveRule.MOVE && epVictim >= 0 && sq[epVictim] != 0 && team(color(sq[epVictim])) != team(c))
 						add(s, t, d, c, out, VM.EP)
 				} else {
-					if (color(occ) != c && r.mode != MoveRule.MOVE) add(s, t, d, c, out, 0)
+					if (team(color(occ)) != team(c) && r.mode != MoveRule.MOVE) add(s, t, d, c, out, 0)
 					break
 				}
 				if (!r.slide) break
@@ -342,11 +467,12 @@ class VPos(val v: Variant) {
 		else out.add(VM.make(s, t, 0, flags))
 	}
 
+	// клетку s бьёт команда by (на двоих — цвет by)
 	fun attacked(s: Int, by: Int): Boolean {
 		val tmp = ArrayList<Int>(32)
 		for (i in 0 until n) {
 			val code = sq[i]
-			if (code == 0 || color(code) != by) continue
+			if (code == 0 || team(color(code)) != by) continue
 			tmp.clear()
 			gen(i, tmp, true)
 			if (tmp.any { VM.to(it) == s }) return true
@@ -356,27 +482,31 @@ class VPos(val v: Variant) {
 
 	fun royals(c: Int) = (0 until n).filter { sq[it] != 0 && color(sq[it]) == c && type(sq[it]) in royalTypes }
 
-	fun inCheck(c: Int = turn): Boolean = royalTypes.isNotEmpty() && royals(c).any { attacked(it, 1 - c) }
+	fun inCheck(c: Int = turn): Boolean = royalTypes.isNotEmpty() && royals(c).any { attacked(it, foe(c)) }
 
 	private fun castles(out: MutableList<Int>) {
-		if (!v.castling) return
+		if (!v.castling || players == 4) return
 		for (k in royals(turn)) {
 			if (moved[k]) continue
-			if (usesCheck && attacked(k, 1 - turn)) continue
+			if (usesCheck && attacked(k, foe(turn))) continue
 			val ky = y(k); val kx = x(k)
 			val kd = def(sq[k])
+			val vertical = kd.castleAxis == 1
+			val lim = if (vertical) v.h else v.w
+			fun at(q: Int) = if (vertical) v.idx(kx, q) else v.idx(q, ky)
+			val kp = if (vertical) ky else kx
 			for (dir in intArrayOf(-1, 1)) {
-				// вправо (к вертикали h) — короткая, влево — длинная; у каждой свой шаг короля
+				// вправо (к вертикали h) или вверх — короткая, влево или вниз — длинная; у каждой свой шаг короля
 				if (if (dir > 0) !kd.castleShort else !kd.castleLong) continue
 				val steps = if (dir > 0) kd.stepsShort else kd.stepsLong
-				var x = kx + dir
-				while (x in 0 until v.w && sq[v.idx(x, ky)] == 0 && !v.locked[v.idx(x, ky)]) x += dir
-				if (x !in 0 until v.w) continue
-				val r = v.idx(x, ky)
+				var x = kp + dir
+				while (x in 0 until lim && sq[at(x)] == 0 && !v.locked[at(x)]) x += dir
+				if (x !in 0 until lim) continue
+				val r = at(x)
 				val rc = sq[r]
-				if (rc == 0 || color(rc) != turn || !def(rc).castler || moved[r] || kotlin.math.abs(x - kx) <= steps) continue
-				val t = v.idx(kx + steps * dir, ky)
-				if (usesCheck && (1..steps).any { attacked(v.idx(kx + it * dir, ky), 1 - turn) }) continue
+				if (rc == 0 || color(rc) != turn || !def(rc).castler || moved[r] || kotlin.math.abs(x - kp) <= steps) continue
+				val t = at(kp + steps * dir)
+				if (usesCheck && (1..steps).any { attacked(at(kp + it * dir), foe(turn)) }) continue
 				out.add(VM.make(k, t, 0, VM.CASTLE))
 			}
 		}
@@ -403,25 +533,29 @@ class VPos(val v: Variant) {
 		var capture = sq[t] != 0
 		if (fl and VM.EP != 0 && epVictim >= 0) { sq[epVictim] = 0; capture = true }
 		if (fl and VM.CASTLE != 0) {
-			val dir = if (x(t) > x(f)) 1 else -1
-			var rx = x(t) + dir
-			while (sq[v.idx(rx, y(f))] == 0) rx += dir
-			val r = v.idx(rx, y(f))
+			val vertical = d.castleAxis == 1
+			val dir = if (if (vertical) y(t) > y(f) else x(t) > x(f)) 1 else -1
+			fun at(q: Int) = if (vertical) v.idx(x(f), q) else v.idx(q, y(f))
+			val tp = if (vertical) y(t) else x(t)
+			var rx = tp + dir
+			while (sq[at(rx)] == 0) rx += dir
+			val r = at(rx)
 			val rook = sq[r]
 			sq[r] = 0
 			// ладья встаёт рядом с королём с внутренней стороны
-			sq[v.idx(x(t) - dir, y(f))] = rook
-			moved[v.idx(x(t) - dir, y(f))] = true
+			sq[at(tp - dir)] = rook
+			moved[at(tp - dir)] = true
 		}
-		if (d.pawn && lastRank(color(code), t)) promoted = color(code)
+		if (d.pawn && lastRank(color(code), t)) promoted = team(color(code))
 		sq[t] = if (VM.promo(m) != 0) Variant.code(VM.promo(m) - 1, color(code)) else code
 		sq[f] = 0
 		moved[t] = true; moved[f] = true
 		ep = -1; epVictim = -1
 		if (fl and VM.DOUBLE != 0) { ep = v.idx((x(f) + x(t)) / 2, (y(f) + y(t)) / 2); epVictim = t }
 		quiet = if (capture || d.pawn) 0 else quiet + 1
-		turn = 1 - turn
-		if (royalTypes.isNotEmpty() && inCheck(turn)) checks[1 - turn]++
+		val mover = turn
+		turn = (turn + 1) % players
+		if (royalTypes.isNotEmpty() && inCheck(turn)) checks[team(mover)]++
 	}
 
 	fun key(): Long {
@@ -432,23 +566,24 @@ class VPos(val v: Variant) {
 
 	fun record() { val k = key(); history[k] = (history[k] ?: 0) + 1 }
 
-	// -1 — идёт; 0 — победа белых; 1 — победа чёрных; 2 — ничья
+	// -1 — идёт; 0/1 — победила команда (на двоих — белые/чёрные); 2 — ничья
 	fun result(): Int {
-		val mover = 1 - turn
+		val prevColor = prev()
+		val mover = team(prevColor)
 		when (v.win) {
-			Variant.WIN_CAPTURE_ROYAL -> for (c in 0..1) if (hasRoyalStart[c] > 0 && royals(c).isEmpty()) return 1 - c
-			Variant.WIN_ALL -> for (c in 0..1) if ((0 until n).none { sq[it] != 0 && color(sq[it]) == c }) return 1 - c
-			Variant.WIN_HILL -> if (royals(mover).any { onHill(it) }) return mover
+			Variant.WIN_CAPTURE_ROYAL -> for (c in 0 until players) if (hasRoyalStart[c] > 0 && royals(c).isEmpty()) return 1 - team(c)
+			Variant.WIN_ALL -> for (t in 0..1) if ((0 until n).none { sq[it] != 0 && team(color(sq[it])) == t }) return 1 - t
+			Variant.WIN_HILL -> if (royals(prevColor).any { onHill(it) }) return mover
 			Variant.WIN_CHECKS -> if (checks[mover] >= v.nChecks) return mover
 			Variant.WIN_PROMO -> if (promoted == mover) return mover
 		}
-		// у стороны не осталось фигур вовсе — проигрыш в любом режиме
-		for (c in 0..1) if ((0 until n).none { sq[it] != 0 && color(sq[it]) == c }) return 1 - c
+		// у команды не осталось фигур вовсе — проигрыш в любом режиме
+		for (t in 0..1) if ((0 until n).none { sq[it] != 0 && team(color(sq[it])) == t }) return 1 - t
 		if (legal().isEmpty()) {
 			if (usesCheck && inCheck(turn)) return mover
-			return when (v.stalemate) { 1 -> mover; 2 -> turn; else -> 2 }
+			return when (v.stalemate) { 1 -> mover; 2 -> team(turn); else -> 2 }
 		}
-		if (quiet >= 100) return 2
+		if (quiet >= 50 * players) return 2
 		if ((history[key()] ?: 0) >= 3) return 2
 		return -1
 	}
@@ -459,7 +594,7 @@ class VPos(val v: Variant) {
 	// материал в пользу белых
 	fun material(): Int {
 		var s = 0
-		for (c in sq) if (c != 0) { val d = def(c); val vv = if (d.royal) 0 else d.value; s += if (color(c) == 0) vv else -vv }
+		for (c in sq) if (c != 0) { val d = def(c); val vv = if (d.royal) 0 else d.value; s += if (team(color(c)) == 0) vv else -vv }
 		return s
 	}
 
@@ -467,7 +602,7 @@ class VPos(val v: Variant) {
 	fun moveName(m: Int): String {
 		val f = VM.from(m); val t = VM.to(m)
 		val d = def(sq[f])
-		if (VM.flags(m) and VM.CASTLE != 0) return if (x(t) > x(f)) "0-0" else "0-0-0"
+		if (VM.flags(m) and VM.CASTLE != 0) return if (if (d.castleAxis == 1) y(t) > y(f) else x(t) > x(f)) "0-0" else "0-0-0"
 		val cap = sq[t] != 0 || VM.flags(m) and VM.EP != 0
 		val p = if (VM.promo(m) != 0) "=" + v.pieces[VM.promo(m) - 1].symbol else ""
 		return (if (d.pawn) "" else d.symbol) + sqName(f) + (if (cap) "x" else "-") + sqName(t) + p
@@ -519,18 +654,44 @@ class VMaterial(private val depth: Int) : VBot {
 		return bestMove
 	}
 
+	// Разбор позиции без ограничения «лучший ход»: оценка каждого хода (за ходящего) на глубину depth, не дольше ms.
+	// Возвращает ходы по убыванию оценки; пусто — если позиция закончена или время вышло до первого хода.
+	fun lines(p: VPos, depth: Int, ms: Long, cancel: () -> Boolean = { false }): List<Pair<Int, Int>> {
+		this.cancel = cancel
+		val moves = p.legal()
+		if (moves.isEmpty()) return emptyList()
+		deadline = System.currentTimeMillis() + ms
+		stop = false
+		var done: List<Pair<Int, Int>> = emptyList()
+		var order = moves
+		for (d in 1..depth) {
+			val scored = ArrayList<Pair<Int, Int>>()
+			for (m in order) {
+				val q = p.copy(); q.make(m); q.record()
+				val sc = -search(q, d - 1, -WIN * 2, WIN * 2, 1)
+				if (stop) break
+				scored.add(m to sc)
+			}
+			if (stop) break
+			done = scored.sortedByDescending { it.second }
+			order = done.map { it.first }
+			if (done[0].second >= WIN / 2) break
+		}
+		return done
+	}
+
 	private fun timeUp(): Boolean {
 		if (stop) return true
 		if (System.currentTimeMillis() > deadline || cancel()) stop = true
 		return stop
 	}
 
-	private fun evalFor(p: VPos) = if (p.turn == 0) p.material() else -p.material()
+	private fun evalFor(p: VPos) = if (p.team(p.turn) == 0) p.material() else -p.material()
 
 	private fun search(p: VPos, d: Int, a0: Int, b: Int, ply: Int): Int {
 		if (timeUp()) return 0
 		val r = p.result()
-		if (r >= 0) return if (r == 2) 0 else if (r == p.turn) WIN - ply else -WIN + ply
+		if (r >= 0) return if (r == 2) 0 else if (r == p.team(p.turn)) WIN - ply else -WIN + ply
 		if (d <= 0) return quiesce(p, a0, b, 0)
 		var a = a0
 		val ms = order(p, p.legal())
@@ -553,7 +714,7 @@ class VMaterial(private val depth: Int) : VBot {
 			if (timeUp()) return 0
 			val q = p.copy(); q.make(m)
 			val r = q.result()
-			val sc = if (r >= 0) (if (r == 2) 0 else if (r == p.turn) WIN else -WIN) else -quiesce(q, -b, -a, qd + 1)
+			val sc = if (r >= 0) (if (r == 2) 0 else if (r == p.team(p.turn)) WIN else -WIN) else -quiesce(q, -b, -a, qd + 1)
 			if (sc > a) a = sc
 			if (a >= b) break
 		}
@@ -566,51 +727,95 @@ class VMaterial(private val depth: Int) : VBot {
 	}
 }
 
-// Алгоритм: правила вместо перебора. Уровни 1–5: на низких чаще зевает.
+// Алгоритм: правила вместо перебора. Уровни 1–5: на низких чаще зевает. Оценку позиции (полосу) не использует — только материал и свои правила.
 class VAlgorithm(private val level: Int) : VBot {
+	private fun center(v: Variant, s: Int): Double {
+		// чем ближе к центру доски, тем лучше: 0..1
+		val cx = (v.w - 1) / 2.0; val cy = (v.h - 1) / 2.0
+		val d = Math.abs(s % v.w - cx) / (cx + 0.5) + Math.abs(s / v.w - cy) / (cy + 0.5)
+		return 1.0 - d / 2
+	}
+
 	override fun pick(p: VPos, cancel: () -> Boolean): Int {
 		val moves = p.legal()
 		if (moves.isEmpty()) return 0
 		val blunder = when (level) { 1 -> 0.5; 2 -> 0.3; 3 -> 0.15; 4 -> 0.05; else -> 0.0 }
 		if (Math.random() < blunder) return moves.random()
 		val me = p.turn
-		var best = moves[0]; var bestSc = Int.MIN_VALUE
+		val myTeam = p.team(me); val foe = p.foe(me)
+		val small = p.n <= 144
+		var best = moves[0]; var bestSc = Double.NEGATIVE_INFINITY
+		// сколько своих фигур висит сейчас — чтобы поощрять ходы, которые это исправляют
+		fun hangingNow(q: VPos): Int {
+			var sum = 0
+			for (s in 0 until q.n) {
+				val c = q.sq[s]
+				if (c == 0 || q.color(c) != me || q.def(c).royal) continue
+				if (q.attacked(s, foe) && !q.attacked(s, myTeam)) sum += q.def(c).value
+			}
+			return sum
+		}
+		val hangBefore = if (level >= 2) hangingNow(p) else 0
 		for (m in moves) {
 			val q = p.copy(); q.make(m)
 			val r = q.result()
-			var sc: Int
-			if (r == me) sc = 10_000_000
-			else if (r == 1 - me) sc = -10_000_000
-			else if (r == 2) sc = -50
+			var sc: Double
+			if (r == myTeam) sc = 10_000_000.0
+			else if (r == 1 - myTeam) sc = -10_000_000.0
+			else if (r == 2) sc = -50.0
 			else {
 				val target = p.sq[VM.to(m)]
 				val mover = p.def(p.sq[VM.from(m)])
 				val moverVal = if (VM.promo(m) != 0) p.v.pieces[VM.promo(m) - 1].value else mover.value
-				sc = if (target != 0) p.def(target).value * 10 else 0
+				sc = if (target != 0) p.def(target).value * 10.0 else 0.0
 				if (VM.flags(m) and VM.EP != 0) sc += 1000
 				if (VM.promo(m) != 0) sc += (moverVal - mover.value) * 10
-				// не ставить фигуру под удар
-				if (!mover.royal && q.attacked(VM.to(m), 1 - me)) {
-					val defended = q.copy().let { z -> z.sq[VM.to(m)] = 0; z.attacked(VM.to(m), me) }
-					sc -= if (defended) moverVal * 4 else moverVal * 10
+				// не ставить фигуру под удар; защищённая стоит дешевле
+				if (!mover.royal && q.attacked(VM.to(m), foe)) {
+					val defended = q.copy().let { z -> z.sq[VM.to(m)] = 0; z.attacked(VM.to(m), myTeam) }
+					// размен выгоден, если взяли не меньше, чем отдаём
+					val cap = if (target != 0) p.def(target).value else 0
+					sc -= if (defended) maxOf(0, moverVal - cap) * 4.0 else moverVal * 10.0
 				}
-				// уводить свои висящие фигуры: штраф за то, что остаётся под боем
-				if (level >= 2) for (s in 0 until q.n) {
-					val c = q.sq[s]
-					if (c == 0 || q.color(c) != me || q.def(c).royal || s == VM.to(m)) continue
-					if (q.attacked(s, 1 - me) && !q.attacked(s, me)) sc -= q.def(c).value * 6
+				if (level >= 2) {
+					// уводить свои висящие фигуры: штраф за то, что остаётся под боем (считаем только после хода)
+					val hang = hangingNow(q)
+					sc -= hang * 6.0
+					if (hang < hangBefore) sc += (hangBefore - hang) * 2.0
 				}
 				// шах полезен
 				if (level >= 3 && q.inCheck(q.turn)) sc += 150
+				if (level >= 3) {
+					// развитие и центр: ранние ходы фигур к центру, пешек к центру — чуть лучше
+					val gain = center(p.v, VM.to(m)) - center(p.v, VM.from(m))
+					sc += gain * (if (mover.pawn) 25 else 40)
+					// не бросать короля вперёд без нужды
+					if (mover.royal && VM.flags(m) and VM.CASTLE == 0 && p.v.castling) sc -= 30
+					if (VM.flags(m) and VM.CASTLE != 0) sc += 120
+					// пешка, идущая к клетке превращения, — ценна
+					if (mover.pawn) {
+						val c = p.color(p.sq[VM.from(m)])
+						val lx = p.v.toLy(c, VM.to(m)); val far = if (p.players == 4) p.v.w / 2 else p.v.h - 1
+						if (lx * 2 >= far) sc += (lx * 2 - far + 1) * 6.0
+					}
+				}
 				// вилки: сколько ценных фигур соперника бьёт фигура с нового места
-				if (level >= 4) {
+				if (level >= 4 && small) {
+					val savedTurn = q.turn
 					q.turn = me
-					val hits = q.pseudo().filter { VM.from(it) == VM.to(m) && q.sq[VM.to(it)] != 0 }.map { q.def(q.sq[VM.to(it)]) }
-					q.turn = 1 - me
+					val hits = q.pseudo().filter { VM.from(it) == VM.to(m) && q.sq[VM.to(it)] != 0 && q.team(q.color(q.sq[VM.to(it)])) != myTeam }.map { q.def(q.sq[VM.to(it)]) }
+					q.turn = savedTurn
 					val forks = hits.count { it.royal || it.value > moverVal }
 					if (forks >= 2) sc += 400
+					// не пропустить мат в один ход: смотрим ответы соперника
+					if (!cancel() && q.players == 2) {
+						for (reply in q.legal()) {
+							val z = q.copy(); z.make(reply)
+							if (z.result() == 1 - myTeam) { sc -= 5000.0; break }
+						}
+					}
 				}
-				sc += (Math.random() * 20).toInt()
+				sc += Math.random() * 20
 			}
 			if (sc > bestSc) { bestSc = sc; best = m }
 			if (cancel()) break

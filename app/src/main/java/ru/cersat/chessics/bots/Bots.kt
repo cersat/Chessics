@@ -479,7 +479,7 @@ class MaterialBot(private val depth: Int) : Bot {
 
 // Бот «Алгоритм»: не минимакс, а правила. Уровень 1..5. Позиционную оценку (полосу) НЕ использует.
 class AlgoBot(level0: Int) : Bot {
-	private class Cfg(val blunder: Double, val margin: Int, val hangingScan: Boolean, val tactics: Boolean, val mateEye: Double, val lookahead: Boolean)
+	private class Cfg(val blunder: Double, val margin: Int, val hangingScan: Boolean, val tactics: Boolean, val mateEye: Double, val lookahead: Boolean, val positional: Boolean = false, val deep: Boolean = false)
 
 	private val level = if (level0 in 1..5) level0 else 3
 	private val cfg = LEVELS[level - 1]
@@ -512,6 +512,41 @@ class AlgoBot(level0: Int) : Bot {
 			if (s > bestScore) { bestScore = s; best = m }
 		}
 		return if (best != 0) best else pool[0]
+	}
+
+	// Позиционные правила (с уровня «Крепкий»): центр, развитие, открытые линии, безопасность короля, не гонять одну фигуру
+	private fun positional(pos: Position, m: Int, mover: Int, piece: Int, isCapture: Boolean, moveNum: Int, eg: Boolean): Double {
+		var s = 0.0
+		val from = M.from(m); val to = M.to(m)
+		val ff = P.file(from); val tf = P.file(to)
+		val fr = P.rank(from); val tr = P.rank(to)
+		fun centre(f: Int, r: Int) = 3.5 - Math.abs(f - 3.5) / 2 - Math.abs(r - 3.5) / 2
+		// в дебюте центральные пешки и фигуры к центру
+		if (moveNum <= 14 && !eg) {
+			if (piece == P.PAWN && (ff == 3 || ff == 4)) s += 14.0 + (centre(tf, tr) - centre(ff, fr)) * 4
+			else if (piece == P.KNIGHT || piece == P.BISHOP) s += (centre(tf, tr) - centre(ff, fr)) * 5
+			// не выводить ферзя и ладью слишком рано
+			if (moveNum <= 6 && (piece == P.QUEEN || piece == P.ROOK) && !isCapture) s -= 14.0
+			// не ходить краевой пешкой в дебюте
+			if (piece == P.PAWN && (ff == 0 || ff == 7) && !isCapture) s -= 5.0
+		}
+		// ладья на открытую или полуоткрытую линию
+		if (piece == P.ROOK && ff != tf) {
+			var own = false; var their = false
+			for (r in 0..7) {
+				val pc = pos.sq[P.sq(tf, r)]
+				if (pc != 0 && P.type(pc) == P.PAWN) { if (P.color(pc) == mover) own = true else their = true }
+			}
+			if (!own && !their) s += 14.0 else if (!own) s += 8.0
+		}
+		// король в эндшпиле идёт к центру, в миттельшпиле остаётся за пешками
+		if (piece == P.KING && !M.isCastle(m)) s += if (eg) (centre(tf, tr) - centre(ff, fr)) * 8 else 0.0
+		// не оставлять пешки перед своим королём без нужды
+		if (piece == P.PAWN && !eg) {
+			val king = pos.king[mover]
+			if (Math.abs(P.file(king) - ff) <= 1 && Math.abs(P.rank(king) - fr) <= 2 && !isCapture) s -= 7.0
+		}
+		return s
 	}
 
 	private fun endgame(pos: Position): Boolean {
@@ -564,6 +599,7 @@ class AlgoBot(level0: Int) : Bot {
 		pos.unmake()
 		val moveNum = plyCount + 1
 		val backRank = if (mover == P.WHITE) 0 else 7
+		if (cfg.positional) score += positional(pos, m, mover, piece, cap != 0, moveNum, eg)
 		if (moveNum <= 10 && (piece == P.KNIGHT || piece == P.BISHOP) && P.rank(M.from(m)) == backRank) score += 12
 		if (M.isCastle(m)) score += 30
 		if (piece == P.KING && !M.isCastle(m) && !eg) score -= 15
@@ -602,9 +638,9 @@ class AlgoBot(level0: Int) : Bot {
 		private val LEVELS = arrayOf(
 			Cfg(0.35, 60, false, false, 0.4, false),
 			Cfg(0.18, 35, false, false, 0.75, false),
-			Cfg(0.06, 18, true, false, 1.0, false),
-			Cfg(0.0, 10, true, true, 1.0, true),
-			Cfg(0.0, 4, true, true, 1.0, true)
+			Cfg(0.06, 18, true, false, 1.0, false, true),
+			Cfg(0.0, 10, true, true, 1.0, true, true),
+			Cfg(0.0, 4, true, true, 1.0, true, true)
 		)
 		val LABELS = arrayOf("Новичок", "Любитель", "Крепкий", "Сильный", "Мастер")
 	}
